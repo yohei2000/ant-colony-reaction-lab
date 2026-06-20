@@ -369,24 +369,46 @@ class Ant3D {
   createMesh(sim) {
     const group = new THREE.Group();
     const abdomen = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
-    abdomen.scale.set(0.95, 0.58, 1.2);
-    abdomen.position.z = -1.25;
+    abdomen.scale.set(0.58, 0.34, 1.12);
+    abdomen.position.z = -1.18;
+    const waist = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
+    waist.scale.set(0.24, 0.22, 0.32);
+    waist.position.z = -0.34;
     const thorax = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
-    thorax.scale.set(0.76, 0.5, 0.8);
+    thorax.scale.set(0.46, 0.31, 0.68);
+    thorax.position.z = 0.2;
     const head = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
-    head.scale.set(0.66, 0.45, 0.62);
-    head.position.z = 1.1;
-    for (const mesh of [abdomen, thorax, head]) {
+    head.scale.set(0.42, 0.28, 0.5);
+    head.position.z = 1.0;
+    for (const mesh of [abdomen, waist, thorax, head]) {
       mesh.castShadow = sim.quality.shadowQuality !== "off";
       mesh.receiveShadow = false;
     }
-    group.add(abdomen, thorax, head);
-    this.bodyParts = [abdomen, thorax, head];
+    group.add(abdomen, waist, thorax, head);
+    this.bodyParts = [abdomen, waist, thorax, head];
 
     const legPositions = [];
     for (const side of [-1, 1]) {
-      for (const z of [-0.7, 0.05, 0.75]) {
-        legPositions.push(-0.25, 0, z, side * 1.28, -0.2, z + side * 0.1);
+      const legs = [
+        { rootX: 0.28, rootZ: -0.18, elbowX: 0.72, elbowZ: -0.58, footX: 1.34, footZ: -0.9 },
+        { rootX: 0.34, rootZ: 0.25, elbowX: 0.86, elbowZ: 0.14, footX: 1.5, footZ: 0.08 },
+        { rootX: 0.28, rootZ: 0.64, elbowX: 0.76, elbowZ: 1.02, footX: 1.28, footZ: 1.35 },
+      ];
+      for (const leg of legs) {
+        legPositions.push(
+          side * leg.rootX,
+          -0.02,
+          leg.rootZ,
+          side * leg.elbowX,
+          -0.18,
+          leg.elbowZ,
+          side * leg.elbowX,
+          -0.18,
+          leg.elbowZ,
+          side * leg.footX,
+          -0.32,
+          leg.footZ,
+        );
       }
     }
     const legGeometry = new THREE.BufferGeometry();
@@ -394,6 +416,29 @@ class Ant3D {
     const legs = new THREE.LineSegments(legGeometry, sim.materials.antLegs);
     group.add(legs);
     this.legGeometry = legGeometry;
+
+    const antennaPositions = [];
+    for (const side of [-1, 1]) {
+      antennaPositions.push(
+        side * 0.2,
+        0.08,
+        1.38,
+        side * 0.48,
+        0.04,
+        1.78,
+        side * 0.48,
+        0.04,
+        1.78,
+        side * 0.78,
+        -0.05,
+        2.02,
+      );
+    }
+    const antennaGeometry = new THREE.BufferGeometry();
+    antennaGeometry.setAttribute("position", new THREE.Float32BufferAttribute(antennaPositions, 3));
+    const antennae = new THREE.LineSegments(antennaGeometry, sim.materials.antLegs);
+    group.add(antennae);
+    this.antennaGeometry = antennaGeometry;
 
     const load = new THREE.Mesh(sim.geometries.foodCrumb, sim.materials.food);
     load.position.set(0, 0.14, 1.9);
@@ -771,6 +816,7 @@ class Ant3D {
   destroy(scene) {
     scene.remove(this.group);
     this.legGeometry.dispose();
+    this.antennaGeometry.dispose();
   }
 }
 
@@ -788,7 +834,7 @@ class AntColony3D {
     this.currentPixelRatio = 1;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x181a18);
-    this.scene.fog = new THREE.Fog(0x181a18, 96, 190);
+    this.scene.fog = new THREE.Fog(0x181a18, 145, 285);
     this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 320);
     this.renderer = this.createRenderer();
     if (!this.renderer) return;
@@ -832,7 +878,7 @@ class AntColony3D {
     this.cameraPitch = 1.05;
     this.targetCameraYaw = this.cameraYaw;
     this.targetCameraPitch = this.cameraPitch;
-    this.cameraDistance = window.innerWidth < 680 ? 132 : 128;
+    this.cameraDistance = window.innerWidth < 680 ? 174 : 162;
     this.targetCameraDistance = this.cameraDistance;
 
     this.sharedGeometries = new Set();
@@ -1085,7 +1131,7 @@ class AntColony3D {
     this.currentPixelRatio = Math.min((window.devicePixelRatio || 1) * this.quality.resolutionScale, this.quality.maxPixelRatio);
     this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.setSize(width, height, false);
-    this.cameraDistance = width < 680 ? 132 : 128;
+    this.cameraDistance = width < 680 ? 174 : 162;
     this.targetCameraDistance = this.cameraDistance;
     this.updateCamera();
   }
@@ -1255,7 +1301,7 @@ class AntColony3D {
     if (this.pointerMap.size === 2 && this.pinchStart) {
       const points = [...this.pointerMap.values()];
       const current = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 72, 168);
+      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 96, 230);
       return;
     }
 
