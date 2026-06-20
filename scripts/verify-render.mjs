@@ -208,11 +208,19 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
       expression: `(() => {
         const canvas = document.querySelector("#world3d canvas");
         const rect = canvas.getBoundingClientRect();
+        const sim = window.__ANT_SIM;
+        const info = sim?.renderer?.info;
         return {
           width: canvas.width,
           height: canvas.height,
           cssWidth: Math.round(rect.width),
           cssHeight: Math.round(rect.height),
+          pixelRatio: sim?.currentPixelRatio ?? null,
+          quality: sim?.quality?.label ?? null,
+          calls: info?.render?.calls ?? null,
+          triangles: info?.render?.triangles ?? null,
+          geometries: info?.memory?.geometries ?? null,
+          textures: info?.memory?.textures ?? null,
         };
       })()`,
       returnByValue: true,

@@ -846,6 +846,7 @@ class AntColony3D {
     this.debugPanel = new DebugPanel(this);
     this.reset();
     this.resize();
+    window.__ANT_SIM = this;
     this.prewarmAndStart();
   }
 
@@ -1218,6 +1219,7 @@ class AntColony3D {
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.renderer = null;
+    if (window.__ANT_SIM === this) window.__ANT_SIM = null;
   }
 
   onPointerDown(event) {
