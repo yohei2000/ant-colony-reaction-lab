@@ -2,23 +2,30 @@
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>蟻の群れリアクションラボ</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>蟻の群れリアクションラボ 3D</title>
     <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js"
+        }
+      }
+    </script>
   </head>
   <body>
     <main class="app-shell">
-      <canvas id="world" aria-label="蟻の群れのシミュレーション"></canvas>
+      <div id="world3d" aria-label="蟻の群れの3Dシミュレーション"></div>
 
       <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true"></span>
+        <div class="title-block">
+          <span class="title-mark" aria-hidden="true"></span>
           <div>
-            <strong>蟻の群れリアクションラボ</strong>
-            <small>群れの反応観察</small>
+            <strong>蟻の群れリアクションラボ 3D</strong>
+            <small id="activeToolLabel">観察</small>
           </div>
         </div>
-        <div class="top-actions">
+        <div class="quick-actions">
           <button id="pauseBtn" class="icon-button" type="button" title="一時停止" aria-label="一時停止">
             <span class="pause-icon" aria-hidden="true"></span>
           </button>
@@ -28,89 +35,71 @@
         </div>
       </header>
 
-      <aside class="side-panel" aria-label="観察パネル">
-        <section class="panel-section">
-          <h2>群れ</h2>
-          <dl class="stats-grid">
-            <div>
-              <dt>探索</dt>
-              <dd id="statExplore">0</dd>
-            </div>
-            <div>
-              <dt>避難</dt>
-              <dd id="statPanic">0</dd>
-            </div>
-            <div>
-              <dt>救助</dt>
-              <dd id="statRescue">0</dd>
-            </div>
-            <div>
-              <dt>搬入</dt>
-              <dd id="statFood">0</dd>
-            </div>
-          </dl>
-        </section>
+      <section class="stats-strip" aria-label="群れの状態">
+        <div>
+          <span>探索</span>
+          <strong id="statExplore">0</strong>
+        </div>
+        <div>
+          <span>避難</span>
+          <strong id="statAlert">0</strong>
+        </div>
+        <div>
+          <span>救助</span>
+          <strong id="statRescue">0</strong>
+        </div>
+        <div>
+          <span>搬入</span>
+          <strong id="statFood">0</strong>
+        </div>
+      </section>
 
-        <section class="panel-section">
-          <h2>個体</h2>
-          <div id="inspector" class="inspector">
-            <span class="muted">未選択</span>
-          </div>
-        </section>
-
-        <section class="panel-section">
-          <h2>設定</h2>
-          <label class="slider-row">
+      <section class="inspector-panel" aria-label="個体情報">
+        <div id="inspector" class="inspector">
+          <span class="muted">個体未選択</span>
+        </div>
+        <div class="control-row">
+          <label>
             <span>群れ</span>
-            <input id="antCount" type="range" min="50" max="220" value="130" step="10" />
-            <output id="antCountValue">130</output>
+            <input id="antCount" type="range" min="50" max="160" value="95" step="5" />
+            <output id="antCountValue">95</output>
           </label>
-          <label class="slider-row">
+          <label>
             <span>刺激</span>
             <input id="intensity" type="range" min="1" max="5" value="3" step="1" />
             <output id="intensityValue">3</output>
           </label>
-          <label class="slider-row">
-            <span>速度</span>
-            <input id="speed" type="range" min="0.5" max="1.8" value="1" step="0.1" />
-            <output id="speedValue">1.0</output>
-          </label>
-        </section>
-
-        <section class="panel-section log-section">
-          <h2>ログ</h2>
-          <ol id="eventLog" class="event-log"></ol>
-        </section>
-      </aside>
+        </div>
+      </section>
 
       <nav class="toolbelt" aria-label="操作ツール">
-        <button class="tool-button active" type="button" data-tool="inspect" title="観察" aria-label="観察">
+        <button class="tool-button active" type="button" data-tool="inspect" data-label="観察" title="観察" aria-label="観察">
           <span class="tool-icon inspect-icon" aria-hidden="true"></span>
           <span>観察</span>
         </button>
-        <button class="tool-button" type="button" data-tool="water" title="水" aria-label="水">
+        <button class="tool-button" type="button" data-tool="water" data-label="水" title="水" aria-label="水">
           <span class="tool-icon water-icon" aria-hidden="true"></span>
           <span>水</span>
         </button>
-        <button class="tool-button" type="button" data-tool="stone" title="落下物" aria-label="落下物">
+        <button class="tool-button" type="button" data-tool="stone" data-label="落下物" title="落下物" aria-label="落下物">
           <span class="tool-icon stone-icon" aria-hidden="true"></span>
           <span>物</span>
         </button>
-        <button class="tool-button" type="button" data-tool="food" title="餌" aria-label="餌">
+        <button class="tool-button" type="button" data-tool="food" data-label="餌" title="餌" aria-label="餌">
           <span class="tool-icon food-icon" aria-hidden="true"></span>
           <span>餌</span>
         </button>
-        <button class="tool-button" type="button" data-tool="branch" title="枝" aria-label="枝">
+        <button class="tool-button" type="button" data-tool="branch" data-label="枝" title="枝" aria-label="枝">
           <span class="tool-icon branch-icon" aria-hidden="true"></span>
           <span>枝</span>
         </button>
-        <button class="tool-button" type="button" data-tool="eraser" title="消す" aria-label="消す">
+        <button class="tool-button" type="button" data-tool="erase" data-label="消去" title="消去" aria-label="消去">
           <span class="tool-icon eraser-icon" aria-hidden="true"></span>
           <span>消す</span>
         </button>
       </nav>
     </main>
 
-    <script src="./src/simulation.js"></script>
+    <script type="module" src="./src/simulation.js"></script>
   </body>
 </html>

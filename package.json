@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "check": "node --check ./src/simulation.js"
+    "start": "node ./scripts/serve.mjs",
+    "check": "node --check ./src/simulation.js && node --check ./scripts/serve.mjs && node --check ./scripts/verify-render.mjs",
+    "verify": "node ./scripts/verify-render.mjs"
   }
 }

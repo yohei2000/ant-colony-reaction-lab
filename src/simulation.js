@@ -1,22 +1,20 @@
-const canvas = document.querySelector("#world");
-const ctx = canvas.getContext("2d");
+import * as THREE from "three";
 
 const ui = {
+  world: document.querySelector("#world3d"),
   buttons: [...document.querySelectorAll(".tool-button")],
+  activeToolLabel: document.querySelector("#activeToolLabel"),
   pause: document.querySelector("#pauseBtn"),
   reset: document.querySelector("#resetBtn"),
   antCount: document.querySelector("#antCount"),
   antCountValue: document.querySelector("#antCountValue"),
   intensity: document.querySelector("#intensity"),
   intensityValue: document.querySelector("#intensityValue"),
-  speed: document.querySelector("#speed"),
-  speedValue: document.querySelector("#speedValue"),
   statExplore: document.querySelector("#statExplore"),
-  statPanic: document.querySelector("#statPanic"),
+  statAlert: document.querySelector("#statAlert"),
   statRescue: document.querySelector("#statRescue"),
   statFood: document.querySelector("#statFood"),
   inspector: document.querySelector("#inspector"),
-  log: document.querySelector("#eventLog"),
 };
 
 const ROLE_LABELS = {
@@ -30,143 +28,200 @@ const STATE_LABELS = {
   explore: "探索",
   return: "帰巣",
   panic: "避難",
-  wet: "乾燥待ち",
+  wet: "乾燥",
   stunned: "停止",
   rescue: "救助",
 };
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const lerp = (a, b, t) => a + (b - a) * t;
-const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 const rand = (min, max) => min + Math.random() * (max - min);
 const chance = (p) => Math.random() < p;
+const distance2 = (ax, az, bx, bz) => Math.hypot(ax - bx, az - bz);
 const normAngle = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle));
 
-function nearestPointOnSegment(px, py, ax, ay, bx, by) {
+function closestPointOnSegment(px, pz, ax, az, bx, bz) {
   const vx = bx - ax;
-  const vy = by - ay;
-  const lengthSq = vx * vx + vy * vy || 1;
-  const t = clamp(((px - ax) * vx + (py - ay) * vy) / lengthSq, 0, 1);
-  return { x: ax + vx * t, y: ay + vy * t, t };
+  const vz = bz - az;
+  const len = vx * vx + vz * vz || 1;
+  const t = clamp(((px - ax) * vx + (pz - az) * vz) / len, 0, 1);
+  return { x: ax + vx * t, z: az + vz * t, t };
 }
 
-function seededNoise(seed) {
-  const x = Math.sin(seed * 999.17) * 43758.5453;
-  return x - Math.floor(x);
+function makeGroundTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 768;
+  canvas.height = 768;
+  const context = canvas.getContext("2d");
+  const gradient = context.createLinearGradient(0, 0, 768, 768);
+  gradient.addColorStop(0, "#c9aa67");
+  gradient.addColorStop(0.48, "#a9824b");
+  gradient.addColorStop(1, "#77603d");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 768, 768);
+
+  for (let i = 0; i < 3400; i += 1) {
+    const x = Math.random() * 768;
+    const y = Math.random() * 768;
+    const r = Math.random() * 1.8 + 0.35;
+    context.fillStyle = Math.random() > 0.5 ? "rgba(53,38,23,0.17)" : "rgba(255,232,170,0.12)";
+    context.beginPath();
+    context.arc(x, y, r, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(5, 5);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
 }
 
-class Ant {
-  constructor(id, sim, nearNest = true) {
+class Ant3D {
+  constructor(id, sim) {
     this.id = id;
     this.role = this.pickRole();
-    const spread = nearNest ? sim.nest.radius * rand(0.25, 1.1) : rand(60, Math.max(sim.width, sim.height));
     const angle = rand(0, Math.PI * 2);
+    const spread = rand(3, sim.nest.radius * 1.2);
     this.x = sim.nest.x + Math.cos(angle) * spread;
-    this.y = sim.nest.y + Math.sin(angle) * spread;
+    this.z = sim.nest.z + Math.sin(angle) * spread;
     this.angle = rand(0, Math.PI * 2);
-    this.turnBias = rand(-0.55, 0.55);
-    this.speedBase = rand(30, 56);
+    this.turnBias = rand(-0.4, 0.4);
+    this.baseSpeed = rand(8.5, 15.5);
     this.state = "explore";
     this.stateTime = 0;
     this.wander = rand(0, Math.PI * 2);
-    this.carrying = 0;
     this.wet = 0;
     this.stun = 0;
-    this.energy = rand(0.5, 1);
-    this.target = null;
+    this.carrying = 0;
+    this.energy = rand(0.55, 1);
+    this.lastTrail = rand(0, 1);
+    this.homeTimer = rand(0, 8);
     this.rescueTarget = null;
-    this.lastTrail = 0;
-    this.homeTimer = rand(0, 9);
     this.traits = {
-      curiosity: rand(0.25, 1),
-      caution: rand(0.15, 1),
-      social: rand(0.15, 1),
-      persistence: rand(0.25, 1),
+      curiosity: rand(0.18, 1),
+      caution: rand(0.16, 1),
+      social: rand(0.14, 1),
+      persistence: rand(0.24, 1),
     };
 
     if (this.role === "scout") {
-      this.traits.curiosity = clamp(this.traits.curiosity + 0.24, 0, 1);
-      this.speedBase += 8;
+      this.traits.curiosity = clamp(this.traits.curiosity + 0.25, 0, 1);
+      this.baseSpeed += 2.6;
     } else if (this.role === "nurse") {
-      this.traits.social = clamp(this.traits.social + 0.28, 0, 1);
-      this.traits.caution = clamp(this.traits.caution + 0.14, 0, 1);
+      this.traits.social = clamp(this.traits.social + 0.3, 0, 1);
+      this.traits.caution = clamp(this.traits.caution + 0.12, 0, 1);
     } else if (this.role === "guard") {
       this.traits.caution = clamp(this.traits.caution + 0.24, 0, 1);
-      this.traits.persistence = clamp(this.traits.persistence + 0.16, 0, 1);
+      this.traits.persistence = clamp(this.traits.persistence + 0.18, 0, 1);
     }
+
+    this.group = this.createMesh(sim);
+    sim.scene.add(this.group);
+    this.updateMesh(sim);
   }
 
   pickRole() {
     const roll = Math.random();
-    if (roll < 0.2) return "scout";
+    if (roll < 0.22) return "scout";
     if (roll < 0.72) return "worker";
     if (roll < 0.9) return "nurse";
     return "guard";
   }
 
+  createMesh(sim) {
+    const group = new THREE.Group();
+    const abdomen = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
+    abdomen.scale.set(0.95, 0.58, 1.2);
+    abdomen.position.z = -1.25;
+    const thorax = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
+    thorax.scale.set(0.76, 0.5, 0.8);
+    const head = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
+    head.scale.set(0.66, 0.45, 0.62);
+    head.position.z = 1.1;
+    group.add(abdomen, thorax, head);
+    this.bodyParts = [abdomen, thorax, head];
+
+    const legPositions = [];
+    for (const side of [-1, 1]) {
+      for (const z of [-0.7, 0.05, 0.75]) {
+        legPositions.push(-0.25, 0, z, side * 1.28, -0.2, z + side * 0.1);
+      }
+    }
+    const legGeometry = new THREE.BufferGeometry();
+    legGeometry.setAttribute("position", new THREE.Float32BufferAttribute(legPositions, 3));
+    const legs = new THREE.LineSegments(legGeometry, sim.materials.antLegs);
+    group.add(legs);
+
+    const load = new THREE.Mesh(sim.geometries.foodCrumb, sim.materials.food);
+    load.position.set(0, 0.14, 1.9);
+    load.scale.setScalar(0.72);
+    load.visible = false;
+    group.add(load);
+    this.loadMesh = load;
+
+    return group;
+  }
+
   update(dt, sim) {
     this.stateTime += dt;
-    this.energy = clamp(this.energy + dt * 0.015, 0, 1);
-    this.wet = Math.max(0, this.wet - dt * 0.12);
+    this.homeTimer += dt;
+    this.wet = Math.max(0, this.wet - dt * 0.11);
+    this.energy = clamp(this.energy + dt * 0.012, 0, 1);
     this.lastTrail += dt;
 
     const sensed = this.sense(sim);
-
     if (sensed.waterDepth > 0.08) {
-      this.wet = clamp(this.wet + sensed.waterDepth * dt * 2.2, 0, 1.7);
+      this.wet = clamp(this.wet + sensed.waterDepth * dt * 1.8, 0, 1.8);
       if (this.state !== "rescue") {
-        this.setState(sensed.waterDepth > 0.64 && chance(0.035 + this.wet * 0.02) ? "stunned" : "panic");
+        this.setState(sensed.waterDepth > 0.64 && chance(0.025 + this.wet * 0.02) ? "stunned" : "panic");
       }
     }
 
-    if (sensed.alarm > 0.72 && this.state === "explore" && chance(0.04 + this.traits.caution * 0.04)) {
+    if (sensed.alarm > 0.55 && this.state === "explore" && chance(dt * (0.55 + this.traits.caution))) {
       this.setState("panic");
     }
 
     if (this.stun > 0) {
       this.stun -= dt;
       this.state = "stunned";
-      this.jitter(dt, sim);
-      if (this.stun <= 0 && this.wet < 0.75) this.setState("wet");
+      this.x += Math.cos(this.angle + rand(-1.5, 1.5)) * dt * 0.8;
+      this.z += Math.sin(this.angle + rand(-1.5, 1.5)) * dt * 0.8;
+      if (this.stun <= 0 && this.wet < 0.76) this.setState("wet");
+      this.keepInWorld(sim);
+      this.updateMesh(sim);
       return;
     }
 
     if (this.state === "stunned") {
-      this.stun = rand(1.1, 2.8);
+      this.stun = rand(1.1, 3);
+      this.updateMesh(sim);
       return;
     }
 
     if (this.state !== "rescue") {
       const rescueCandidate = sim.findRescueCandidate(this);
-      if (rescueCandidate && this.traits.social > 0.58 && chance(dt * (0.9 + this.traits.social))) {
+      if (rescueCandidate && this.traits.social > 0.57 && chance(dt * (0.8 + this.traits.social))) {
         this.rescueTarget = rescueCandidate;
         this.setState("rescue");
       }
     }
 
-    const steering = { x: 0, y: 0 };
+    const steering = { x: 0, z: 0 };
     this.addSeparation(steering, sim);
     this.addObstacleAvoidance(steering, sim);
+    steering.x += sensed.hazard.x * (1.2 + this.traits.caution);
+    steering.z += sensed.hazard.z * (1.2 + this.traits.caution);
 
-    if (sensed.hazard.x || sensed.hazard.y) {
-      steering.x += sensed.hazard.x * (1.25 + this.traits.caution);
-      steering.y += sensed.hazard.y * (1.25 + this.traits.caution);
-    }
-
-    if (this.state === "panic") {
-      this.updatePanic(dt, sim, steering, sensed);
-    } else if (this.state === "wet") {
-      this.updateWet(dt, sim, steering);
-    } else if (this.state === "return") {
-      this.updateReturn(dt, sim, steering);
-    } else if (this.state === "rescue") {
-      this.updateRescue(dt, sim, steering);
-    } else {
-      this.updateExplore(dt, sim, steering, sensed);
-    }
+    if (this.state === "panic") this.updatePanic(dt, sim, steering, sensed);
+    else if (this.state === "wet") this.updateWet(dt, sim, steering);
+    else if (this.state === "return") this.updateReturn(dt, sim, steering);
+    else if (this.state === "rescue") this.updateRescue(dt, sim, steering);
+    else this.updateExplore(dt, sim, steering, sensed);
 
     this.move(dt, sim, steering);
     this.leaveTrail(sim);
+    this.updateMesh(sim);
   }
 
   setState(nextState) {
@@ -177,65 +232,60 @@ class Ant {
   }
 
   sense(sim) {
-    const hazard = { x: 0, y: 0 };
+    const hazard = { x: 0, z: 0 };
     let waterDepth = 0;
     let alarm = 0;
     let closestFood = null;
     let foodDistance = Infinity;
 
-    for (const water of sim.water) {
-      const d = dist(this.x, this.y, water.x, water.y);
-      const reach = water.radius + 38;
+    for (const patch of sim.water) {
+      const d = distance2(this.x, this.z, patch.x, patch.z);
+      const reach = patch.radius + 10;
       if (d < reach) {
-        const strength = (1 - d / reach) * water.power;
-        const nx = (this.x - water.x) / (d || 1);
-        const ny = (this.y - water.y) / (d || 1);
-        hazard.x += nx * strength * 1.7;
-        hazard.y += ny * strength * 1.7;
-        if (d < water.radius) waterDepth = Math.max(waterDepth, (1 - d / water.radius) * water.power);
+        const strength = (1 - d / reach) * patch.power;
+        hazard.x += ((this.x - patch.x) / (d || 1)) * strength * 1.7;
+        hazard.z += ((this.z - patch.z) / (d || 1)) * strength * 1.7;
+        if (d < patch.radius) waterDepth = Math.max(waterDepth, (1 - d / patch.radius) * patch.power);
       }
     }
 
-    for (const object of sim.objects) {
-      const d = dist(this.x, this.y, object.x, object.y);
-      const reach = object.radius + 62;
+    for (const stone of sim.stones) {
+      const d = distance2(this.x, this.z, stone.x, stone.z);
+      const reach = stone.radius + 16;
       if (d < reach) {
         const strength = 1 - d / reach;
-        const nx = (this.x - object.x) / (d || 1);
-        const ny = (this.y - object.y) / (d || 1);
-        hazard.x += nx * strength * 1.35;
-        hazard.y += ny * strength * 1.35;
+        hazard.x += ((this.x - stone.x) / (d || 1)) * strength * 1.25;
+        hazard.z += ((this.z - stone.z) / (d || 1)) * strength * 1.25;
       }
-      if (object.shock > 0 && d < object.radius + object.shock * 150) {
-        alarm = Math.max(alarm, object.shock * (1 - d / (object.radius + object.shock * 150)));
+      if (stone.shock > 0 && d < stone.radius + stone.shock * 34) {
+        alarm = Math.max(alarm, stone.shock * (1 - d / (stone.radius + stone.shock * 34)));
       }
     }
 
     for (const branch of sim.branches) {
-      const p = nearestPointOnSegment(this.x, this.y, branch.x1, branch.y1, branch.x2, branch.y2);
-      const d = dist(this.x, this.y, p.x, p.y);
-      const reach = branch.width + 34;
+      const p = closestPointOnSegment(this.x, this.z, branch.x1, branch.z1, branch.x2, branch.z2);
+      const d = distance2(this.x, this.z, p.x, p.z);
+      const reach = branch.width + 7;
       if (d < reach) {
         const strength = 1 - d / reach;
         hazard.x += ((this.x - p.x) / (d || 1)) * strength * 1.3;
-        hazard.y += ((this.y - p.y) / (d || 1)) * strength * 1.3;
+        hazard.z += ((this.z - p.z) / (d || 1)) * strength * 1.3;
       }
     }
 
     for (const trail of sim.trails) {
-      if (trail.kind !== "alarm") continue;
-      const d = dist(this.x, this.y, trail.x, trail.y);
-      if (d < 54) {
-        const strength = trail.life * (1 - d / 54);
+      const d = distance2(this.x, this.z, trail.x, trail.z);
+      if (trail.kind === "alarm" && d < 12) {
+        const strength = trail.life * (1 - d / 12);
         alarm = Math.max(alarm, strength);
-        hazard.x += ((this.x - trail.x) / (d || 1)) * strength * 0.8;
-        hazard.y += ((this.y - trail.y) / (d || 1)) * strength * 0.8;
+        hazard.x += ((this.x - trail.x) / (d || 1)) * strength * 0.7;
+        hazard.z += ((this.z - trail.z) / (d || 1)) * strength * 0.7;
       }
     }
 
     for (const food of sim.food) {
       if (food.amount <= 0) continue;
-      const d = dist(this.x, this.y, food.x, food.y);
+      const d = distance2(this.x, this.z, food.x, food.z);
       if (d < foodDistance) {
         foodDistance = d;
         closestFood = food;
@@ -246,111 +296,86 @@ class Ant {
   }
 
   updateExplore(dt, sim, steering, sensed) {
-    this.homeTimer += dt;
-    const foodPull = this.foodPull(sim, sensed.closestFood, sensed.foodDistance);
-    steering.x += foodPull.x;
-    steering.y += foodPull.y;
-
-    if (sensed.closestFood && sensed.foodDistance < sensed.closestFood.radius + 6 && this.role !== "guard") {
+    if (sensed.closestFood && sensed.foodDistance < sensed.closestFood.radius + 1.5 && this.role !== "guard") {
       this.carrying = Math.min(1, sensed.closestFood.amount);
-      sensed.closestFood.amount -= this.carrying * 0.65;
-      sim.foodHits += 1;
+      sensed.closestFood.amount -= this.carrying * 0.72;
+      sim.refreshFoodMesh(sensed.closestFood);
       this.setState("return");
-      sim.log(`個体 ${this.id} が餌を見つけた`);
       return;
     }
 
-    if (this.homeTimer > 9 + this.traits.persistence * 8 || this.energy < 0.22) {
+    if (sensed.closestFood && sensed.foodDistance < 45 + this.traits.curiosity * 26) {
+      const strength = (1 - sensed.foodDistance / 75) * (0.85 + this.traits.curiosity);
+      steering.x += ((sensed.closestFood.x - this.x) / (sensed.foodDistance || 1)) * strength;
+      steering.z += ((sensed.closestFood.z - this.z) / (sensed.foodDistance || 1)) * strength;
+    }
+
+    for (const trail of sim.trails) {
+      if (trail.kind !== "food") continue;
+      const d = distance2(this.x, this.z, trail.x, trail.z);
+      if (d < 18) {
+        const strength = trail.life * (1 - d / 18) * 0.52;
+        steering.x += ((trail.x - this.x) / (d || 1)) * strength;
+        steering.z += ((trail.z - this.z) / (d || 1)) * strength;
+      }
+    }
+
+    if (this.homeTimer > 9 + this.traits.persistence * 7 || this.energy < 0.2) {
       this.setState("return");
       this.carrying = 0;
       this.homeTimer = 0;
       return;
     }
 
-    this.wander += (Math.random() - 0.5) * dt * (3.2 + this.traits.curiosity * 3.4) + this.turnBias * dt;
-    steering.x += Math.cos(this.wander) * (0.55 + this.traits.curiosity * 0.45);
-    steering.y += Math.sin(this.wander) * (0.55 + this.traits.curiosity * 0.45);
+    this.wander += (Math.random() - 0.5) * dt * (2.3 + this.traits.curiosity * 3.2) + this.turnBias * dt;
+    steering.x += Math.sin(this.wander) * (0.58 + this.traits.curiosity * 0.5);
+    steering.z += Math.cos(this.wander) * (0.58 + this.traits.curiosity * 0.5);
 
-    const homeD = dist(this.x, this.y, sim.nest.x, sim.nest.y);
-    if (homeD > Math.max(sim.width, sim.height) * 0.42) {
-      steering.x += ((sim.nest.x - this.x) / homeD) * 0.65;
-      steering.y += ((sim.nest.y - this.y) / homeD) * 0.65;
+    const homeDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z);
+    if (homeDistance > sim.worldRadius * 0.72) {
+      steering.x += ((sim.nest.x - this.x) / homeDistance) * 0.9;
+      steering.z += ((sim.nest.z - this.z) / homeDistance) * 0.9;
     }
-  }
-
-  foodPull(sim, closestFood, foodDistance) {
-    const pull = { x: 0, y: 0 };
-    if (closestFood && foodDistance < 175 + this.traits.curiosity * 85) {
-      const strength = (1 - foodDistance / 260) * (0.75 + this.traits.curiosity);
-      pull.x += ((closestFood.x - this.x) / (foodDistance || 1)) * strength;
-      pull.y += ((closestFood.y - this.y) / (foodDistance || 1)) * strength;
-    }
-
-    let bestTrail = null;
-    let bestScore = 0;
-    const start = Math.max(0, sim.trails.length - 420);
-    for (let i = start; i < sim.trails.length; i += 1) {
-      const trail = sim.trails[i];
-      if (trail.kind !== "food") continue;
-      const d = dist(this.x, this.y, trail.x, trail.y);
-      if (d < 82) {
-        const score = trail.life * (1 - d / 82);
-        if (score > bestScore) {
-          bestScore = score;
-          bestTrail = trail;
-        }
-      }
-    }
-    if (bestTrail) {
-      const d = dist(this.x, this.y, bestTrail.x, bestTrail.y) || 1;
-      pull.x += ((bestTrail.x - this.x) / d) * bestScore * 0.65;
-      pull.y += ((bestTrail.y - this.y) / d) * bestScore * 0.65;
-    }
-    return pull;
   }
 
   updateReturn(dt, sim, steering) {
-    const d = dist(this.x, this.y, sim.nest.x, sim.nest.y) || 1;
-    steering.x += ((sim.nest.x - this.x) / d) * (1.5 + this.traits.persistence);
-    steering.y += ((sim.nest.y - this.y) / d) * (1.5 + this.traits.persistence);
-    this.energy = clamp(this.energy - dt * 0.025, 0, 1);
-
-    if (d < sim.nest.radius * 0.72) {
-      if (this.carrying > 0) {
-        sim.collectedFood += this.carrying;
-        sim.log(`個体 ${this.id} が餌を巣へ運んだ`);
-      }
+    const d = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
+    steering.x += ((sim.nest.x - this.x) / d) * (1.55 + this.traits.persistence);
+    steering.z += ((sim.nest.z - this.z) / d) * (1.55 + this.traits.persistence);
+    this.energy = clamp(this.energy - dt * 0.024, 0, 1);
+    if (d < sim.nest.radius * 0.7) {
+      if (this.carrying > 0) sim.collectedFood += this.carrying;
       this.carrying = 0;
       this.energy = 1;
-      this.setState("explore");
       this.homeTimer = 0;
+      this.setState("explore");
     }
   }
 
   updatePanic(dt, sim, steering, sensed) {
-    const homeD = dist(this.x, this.y, sim.nest.x, sim.nest.y) || 1;
-    steering.x += ((sim.nest.x - this.x) / homeD) * this.traits.caution * 0.32;
-    steering.y += ((sim.nest.y - this.y) / homeD) * this.traits.caution * 0.32;
-    this.wander += (Math.random() - 0.5) * dt * 10;
-    steering.x += Math.cos(this.wander) * 0.7;
-    steering.y += Math.sin(this.wander) * 0.7;
-    if (this.lastTrail > 0.2) {
-      sim.addTrail(this.x, this.y, "alarm", 0.85);
+    this.wander += (Math.random() - 0.5) * dt * 8;
+    steering.x += Math.sin(this.wander) * 0.78;
+    steering.z += Math.cos(this.wander) * 0.78;
+    const d = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
+    steering.x += ((sim.nest.x - this.x) / d) * this.traits.caution * 0.28;
+    steering.z += ((sim.nest.z - this.z) / d) * this.traits.caution * 0.28;
+    if (this.lastTrail > 0.28) {
+      sim.addTrail(this.x, this.z, "alarm", 0.9);
       this.lastTrail = 0;
     }
-    if (this.stateTime > 1.2 + this.traits.caution * 2.4 && sensed.waterDepth < 0.08) {
+    if (this.stateTime > 1.15 + this.traits.caution * 2.1 && sensed.waterDepth < 0.08) {
       this.setState(this.wet > 0.35 ? "wet" : "explore");
     }
   }
 
   updateWet(dt, sim, steering) {
-    const d = dist(this.x, this.y, sim.nest.x, sim.nest.y) || 1;
-    steering.x += ((sim.nest.x - this.x) / d) * 0.65;
-    steering.y += ((sim.nest.y - this.y) / d) * 0.65;
-    this.wander += (Math.random() - 0.5) * dt * 2.3;
-    steering.x += Math.cos(this.wander) * 0.35;
-    steering.y += Math.sin(this.wander) * 0.35;
-    if (this.wet < 0.18 && this.stateTime > 1.4) this.setState("explore");
+    const d = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
+    steering.x += ((sim.nest.x - this.x) / d) * 0.62;
+    steering.z += ((sim.nest.z - this.z) / d) * 0.62;
+    this.wander += (Math.random() - 0.5) * dt * 2.2;
+    steering.x += Math.sin(this.wander) * 0.32;
+    steering.z += Math.cos(this.wander) * 0.32;
+    if (this.wet < 0.18 && this.stateTime > 1.2) this.setState("explore");
   }
 
   updateRescue(dt, sim, steering) {
@@ -360,28 +385,24 @@ class Ant {
       this.setState("explore");
       return;
     }
-
-    const d = dist(this.x, this.y, target.x, target.y) || 1;
-    if (d > 13) {
-      steering.x += ((target.x - this.x) / d) * 2.1;
-      steering.y += ((target.y - this.y) / d) * 2.1;
+    const d = distance2(this.x, this.z, target.x, target.z) || 1;
+    if (d > 2.6) {
+      steering.x += ((target.x - this.x) / d) * 2.2;
+      steering.z += ((target.z - this.z) / d) * 2.2;
     } else {
-      const homeD = dist(target.x, target.y, sim.nest.x, sim.nest.y) || 1;
-      const pullX = ((sim.nest.x - target.x) / homeD) * 28;
-      const pullY = ((sim.nest.y - target.y) / homeD) * 28;
+      const homeDistance = distance2(target.x, target.z, sim.nest.x, sim.nest.z) || 1;
+      const pullX = ((sim.nest.x - target.x) / homeDistance) * 5.5;
+      const pullZ = ((sim.nest.z - target.z) / homeDistance) * 5.5;
       target.x += pullX * dt;
-      target.y += pullY * dt;
-      target.wet = Math.max(0, target.wet - dt * 0.32);
-      target.stun = Math.max(0, target.stun - dt * (0.45 + this.traits.social * 0.55));
-      steering.x += -pullX * 0.02;
-      steering.y += -pullY * 0.02;
+      target.z += pullZ * dt;
+      target.wet = Math.max(0, target.wet - dt * 0.35);
+      target.stun = Math.max(0, target.stun - dt * (0.42 + this.traits.social * 0.55));
       if (this.lastTrail > 0.38) {
-        sim.addTrail(this.x, this.y, "rescue", 0.8);
+        sim.addTrail(this.x, this.z, "rescue", 0.86);
         this.lastTrail = 0;
       }
     }
-
-    if (this.stateTime > 7) {
+    if (this.stateTime > 7.5) {
       this.rescueTarget = null;
       this.setState("explore");
     }
@@ -389,183 +410,259 @@ class Ant {
 
   addSeparation(steering, sim) {
     let sx = 0;
-    let sy = 0;
+    let sz = 0;
     let count = 0;
     for (const other of sim.ants) {
       if (other === this) continue;
-      const d = dist(this.x, this.y, other.x, other.y);
-      if (d > 0 && d < 9) {
+      const d = distance2(this.x, this.z, other.x, other.z);
+      if (d > 0 && d < 2.2) {
         sx += (this.x - other.x) / d;
-        sy += (this.y - other.y) / d;
+        sz += (this.z - other.z) / d;
         count += 1;
       }
     }
     if (count) {
-      steering.x += (sx / count) * 0.6;
-      steering.y += (sy / count) * 0.6;
+      steering.x += (sx / count) * 0.52;
+      steering.z += (sz / count) * 0.52;
     }
   }
 
   addObstacleAvoidance(steering, sim) {
-    for (const object of sim.objects) {
-      const d = dist(this.x, this.y, object.x, object.y);
-      if (d < object.radius + 4) {
-        const nx = (this.x - object.x) / (d || 1);
-        const ny = (this.y - object.y) / (d || 1);
-        this.x = object.x + nx * (object.radius + 4);
-        this.y = object.y + ny * (object.radius + 4);
-        steering.x += nx * 1.4;
-        steering.y += ny * 1.4;
+    for (const stone of sim.stones) {
+      const d = distance2(this.x, this.z, stone.x, stone.z);
+      if (d < stone.radius + 1.1) {
+        const nx = (this.x - stone.x) / (d || 1);
+        const nz = (this.z - stone.z) / (d || 1);
+        this.x = stone.x + nx * (stone.radius + 1.1);
+        this.z = stone.z + nz * (stone.radius + 1.1);
+        steering.x += nx * 1.25;
+        steering.z += nz * 1.25;
       }
     }
-
     for (const branch of sim.branches) {
-      const p = nearestPointOnSegment(this.x, this.y, branch.x1, branch.y1, branch.x2, branch.y2);
-      const d = dist(this.x, this.y, p.x, p.y);
-      if (d < branch.width + 3) {
+      const p = closestPointOnSegment(this.x, this.z, branch.x1, branch.z1, branch.x2, branch.z2);
+      const d = distance2(this.x, this.z, p.x, p.z);
+      if (d < branch.width + 0.8) {
         const nx = (this.x - p.x) / (d || 1);
-        const ny = (this.y - p.y) / (d || 1);
-        this.x = p.x + nx * (branch.width + 3);
-        this.y = p.y + ny * (branch.width + 3);
-        steering.x += nx * 1.2;
-        steering.y += ny * 1.2;
+        const nz = (this.z - p.z) / (d || 1);
+        this.x = p.x + nx * (branch.width + 0.8);
+        this.z = p.z + nz * (branch.width + 0.8);
+        steering.x += nx;
+        steering.z += nz;
       }
     }
   }
 
   move(dt, sim, steering) {
-    const magnitude = Math.hypot(steering.x, steering.y);
-    if (magnitude > 0.001) {
-      const targetAngle = Math.atan2(steering.y, steering.x);
-      const turnRate = (this.state === "panic" ? 9 : 4.8) * dt;
+    const length = Math.hypot(steering.x, steering.z);
+    if (length > 0.001) {
+      const targetAngle = Math.atan2(steering.x, steering.z);
+      const turnRate = (this.state === "panic" ? 8.6 : 4.6) * dt;
       this.angle += clamp(normAngle(targetAngle - this.angle), -turnRate, turnRate);
     } else {
-      this.angle += (Math.random() - 0.5) * dt * 1.2;
+      this.angle += (Math.random() - 0.5) * dt;
     }
 
-    let speed = this.speedBase;
-    if (this.state === "panic") speed *= 1.45;
-    if (this.state === "return") speed *= 1.12;
-    if (this.state === "rescue") speed *= 0.94;
-    if (this.state === "wet") speed *= 0.58;
-    if (this.carrying > 0) speed *= 0.74;
-    speed *= clamp(1 - this.wet * 0.28, 0.35, 1);
+    let speed = this.baseSpeed;
+    if (this.state === "panic") speed *= 1.42;
+    if (this.state === "return") speed *= 1.08;
+    if (this.state === "rescue") speed *= 0.92;
+    if (this.state === "wet") speed *= 0.56;
+    if (this.carrying > 0) speed *= 0.75;
+    speed *= clamp(1 - this.wet * 0.3, 0.34, 1);
     speed *= sim.timeScale;
 
-    this.x += Math.cos(this.angle) * speed * dt;
-    this.y += Math.sin(this.angle) * speed * dt;
-
-    const margin = 18;
-    if (this.x < margin || this.x > sim.width - margin) {
-      this.angle = Math.PI - this.angle;
-      this.x = clamp(this.x, margin, sim.width - margin);
-    }
-    if (this.y < margin || this.y > sim.height - margin) {
-      this.angle = -this.angle;
-      this.y = clamp(this.y, margin, sim.height - margin);
-    }
+    this.x += Math.sin(this.angle) * speed * dt;
+    this.z += Math.cos(this.angle) * speed * dt;
+    this.keepInWorld(sim);
   }
 
-  jitter(dt, sim) {
-    this.x += Math.cos(this.angle + rand(-1.4, 1.4)) * dt * 4;
-    this.y += Math.sin(this.angle + rand(-1.4, 1.4)) * dt * 4;
-    this.x = clamp(this.x, 16, sim.width - 16);
-    this.y = clamp(this.y, 16, sim.height - 16);
+  keepInWorld(sim) {
+    const d = Math.hypot(this.x, this.z);
+    if (d > sim.worldRadius) {
+      const nx = this.x / d;
+      const nz = this.z / d;
+      this.x = nx * sim.worldRadius;
+      this.z = nz * sim.worldRadius;
+      this.angle += Math.PI * 0.8;
+    }
   }
 
   leaveTrail(sim) {
-    if (this.state === "return" && this.carrying > 0 && this.lastTrail > 0.24) {
-      sim.addTrail(this.x, this.y, "food", 0.9);
+    if (this.state === "return" && this.carrying > 0 && this.lastTrail > 0.35) {
+      sim.addTrail(this.x, this.z, "food", 0.9);
       this.lastTrail = 0;
-    } else if (this.state === "wet" && this.lastTrail > 0.45) {
-      sim.addTrail(this.x, this.y, "water", 0.45);
+    } else if (this.state === "wet" && this.lastTrail > 0.6) {
+      sim.addTrail(this.x, this.z, "water", 0.45);
       this.lastTrail = 0;
     }
   }
 
   shock(strength) {
-    if (strength > 0.82 && chance(0.28 + this.traits.caution * 0.18)) {
+    if (strength > 0.82 && chance(0.24 + this.traits.caution * 0.18)) {
       this.stun = rand(0.8, 2.8) * strength;
       this.setState("stunned");
     } else if (strength > 0.18) {
       this.setState("panic");
     }
   }
+
+  updateMesh(sim) {
+    const material = sim.materials.antByState[this.state] ?? sim.materials.antDefault;
+    for (const part of this.bodyParts) part.material = material;
+    this.loadMesh.visible = this.carrying > 0;
+    this.group.position.set(this.x, 0.72 + Math.sin(performance.now() * 0.006 + this.id) * 0.03, this.z);
+    this.group.rotation.y = this.angle;
+    const scale = this.state === "stunned" ? 0.82 : 1;
+    this.group.scale.setScalar(scale);
+  }
 }
 
-class Simulation {
+class AntColony3D {
   constructor() {
-    this.width = 1;
-    this.height = 1;
-    this.dpr = 1;
-    this.ants = [];
-    this.water = [];
-    this.objects = [];
-    this.food = [];
-    this.branches = [];
-    this.trails = [];
-    this.ground = [];
-    this.tool = "inspect";
-    this.pointer = { down: false, x: 0, y: 0, lastX: 0, lastY: 0 };
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x181a18);
+    this.scene.fog = new THREE.Fog(0x181a18, 96, 190);
+    this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 320);
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+      preserveDrawingBuffer: true,
+    });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    ui.world.appendChild(this.renderer.domElement);
+
+    this.clock = new THREE.Clock();
+    this.raycaster = new THREE.Raycaster();
+    this.ndc = new THREE.Vector2();
+    this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    this.groundHit = new THREE.Vector3();
+    this.pointerMap = new Map();
+    this.pointerStart = null;
     this.branchDraft = null;
+    this.branchPreview = null;
+    this.pinchStart = null;
+    this.dragMoved = false;
+
+    this.tool = "inspect";
     this.paused = false;
     this.timeScale = 1;
-    this.collectedFood = 0;
-    this.foodHits = 0;
+    this.worldRadius = 82;
+    this.nest = { x: -22, z: 7, radius: 12 };
     this.selectedAnt = null;
-    this.lastFrame = performance.now();
-    this.lastUi = 0;
-    this.nest = { x: 0, y: 0, radius: 54 };
-
-    this.resize();
-    this.reset();
-    this.bindEvents();
-    requestAnimationFrame((time) => this.frame(time));
-  }
-
-  resize() {
-    this.width = window.innerWidth;
-    this.height = window.innerHeight;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.floor(this.width * this.dpr);
-    canvas.height = Math.floor(this.height * this.dpr);
-    canvas.style.width = `${this.width}px`;
-    canvas.style.height = `${this.height}px`;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    this.nest = {
-      x: this.width * (this.width < 780 ? 0.42 : 0.34),
-      y: this.height * (this.width < 780 ? 0.55 : 0.58),
-      radius: clamp(Math.min(this.width, this.height) * 0.075, 38, 66),
-    };
-    this.makeGround();
-  }
-
-  reset() {
+    this.collectedFood = 0;
+    this.ants = [];
     this.water = [];
-    this.objects = [];
+    this.stones = [];
     this.food = [];
     this.branches = [];
     this.trails = [];
-    this.collectedFood = 0;
-    this.foodHits = 0;
-    this.selectedAnt = null;
-    this.ants = [];
-    const count = Number(ui.antCount.value);
-    for (let i = 0; i < count; i += 1) this.ants.push(new Ant(i + 1, this));
-    this.log("群れを再生成した");
-    this.updateInspector();
+    this.lastUiUpdate = 0;
+
+    this.cameraTarget = new THREE.Vector3(this.nest.x * 0.55, 0, this.nest.z * 0.55);
+    this.cameraYaw = -0.62;
+    this.cameraPitch = 1.05;
+    this.cameraDistance = window.innerWidth < 680 ? 132 : 128;
+
+    this.createSharedAssets();
+    this.createWorld();
+    this.bindEvents();
+    this.reset();
+    this.resize();
+    this.animate();
   }
 
-  makeGround() {
-    this.ground = [];
-    const count = Math.floor((this.width * this.height) / 7200);
-    for (let i = 0; i < count; i += 1) {
-      this.ground.push({
-        x: Math.random() * this.width,
-        y: Math.random() * this.height,
-        r: rand(0.4, 1.8),
-        tone: rand(0, 1),
-      });
+  createSharedAssets() {
+    this.geometries = {
+      antSphere: new THREE.SphereGeometry(1, 12, 8),
+      foodCrumb: new THREE.SphereGeometry(0.8, 10, 8),
+      waterCircle: new THREE.CircleGeometry(1, 64),
+      trailCircle: new THREE.CircleGeometry(1, 18),
+      impactRing: new THREE.TorusGeometry(1, 0.035, 8, 72),
+    };
+
+    this.materials = {
+      ground: new THREE.MeshStandardMaterial({
+        map: makeGroundTexture(),
+        roughness: 0.92,
+        metalness: 0,
+      }),
+      nest: new THREE.MeshStandardMaterial({ color: 0x6d4e2a, roughness: 0.95 }),
+      nestDark: new THREE.MeshBasicMaterial({ color: 0x1d140e }),
+      antDefault: new THREE.MeshStandardMaterial({ color: 0x18130f, roughness: 0.72 }),
+      antLegs: new THREE.LineBasicMaterial({ color: 0x12100d, transparent: true, opacity: 0.86 }),
+      food: new THREE.MeshStandardMaterial({ color: 0xd9a63f, roughness: 0.62 }),
+      stone: new THREE.MeshStandardMaterial({ color: 0x777c75, roughness: 0.86 }),
+      branch: new THREE.MeshStandardMaterial({ color: 0x8a6232, roughness: 0.9 }),
+      water: new THREE.MeshPhysicalMaterial({
+        color: 0x4aa6d9,
+        transparent: true,
+        opacity: 0.42,
+        roughness: 0.12,
+        metalness: 0,
+        transmission: 0.15,
+        depthWrite: false,
+      }),
+      waterRing: new THREE.MeshBasicMaterial({ color: 0x9ce7ff, transparent: true, opacity: 0.48 }),
+      impact: new THREE.MeshBasicMaterial({ color: 0xe47f63, transparent: true, opacity: 0.42 }),
+      trailFood: new THREE.MeshBasicMaterial({ color: 0xd9a63f, transparent: true, opacity: 0.2, depthWrite: false }),
+      trailAlarm: new THREE.MeshBasicMaterial({ color: 0xd96f58, transparent: true, opacity: 0.24, depthWrite: false }),
+      trailRescue: new THREE.MeshBasicMaterial({ color: 0x51b7a6, transparent: true, opacity: 0.22, depthWrite: false }),
+      trailWater: new THREE.MeshBasicMaterial({ color: 0x55aee0, transparent: true, opacity: 0.18, depthWrite: false }),
+    };
+
+    this.materials.antByState = {
+      explore: this.materials.antDefault,
+      return: new THREE.MeshStandardMaterial({ color: 0x2a1b0e, roughness: 0.72 }),
+      panic: new THREE.MeshStandardMaterial({ color: 0x7f241a, roughness: 0.7 }),
+      wet: new THREE.MeshStandardMaterial({ color: 0x174b63, roughness: 0.64 }),
+      stunned: new THREE.MeshStandardMaterial({ color: 0x5b6261, roughness: 0.82 }),
+      rescue: new THREE.MeshStandardMaterial({ color: 0x17645a, roughness: 0.7 }),
+    };
+  }
+
+  createWorld() {
+    const hemi = new THREE.HemisphereLight(0xf8ead2, 0x21352e, 1.8);
+    this.scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xffedc8, 2.2);
+    sun.position.set(-48, 88, 42);
+    this.scene.add(sun);
+
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.worldRadius + 12, 144), this.materials.ground);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.03;
+    this.scene.add(ground);
+
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(this.worldRadius + 2, 0.26, 8, 160),
+      new THREE.MeshBasicMaterial({ color: 0x51412b, transparent: true, opacity: 0.46 }),
+    );
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = 0.02;
+    this.scene.add(rim);
+
+    this.createNest();
+  }
+
+  createNest() {
+    const mound = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), this.materials.nest);
+    mound.position.set(this.nest.x, 1.25, this.nest.z);
+    mound.scale.set(this.nest.radius * 1.15, 2.1, this.nest.radius * 0.82);
+    this.scene.add(mound);
+
+    for (let i = 0; i < 5; i += 1) {
+      const angle = i * 1.25 + 0.4;
+      const hole = new THREE.Mesh(new THREE.CircleGeometry(1, 22), this.materials.nestDark);
+      hole.rotation.x = -Math.PI / 2;
+      hole.position.set(
+        this.nest.x + Math.cos(angle) * this.nest.radius * rand(0.08, 0.45),
+        2.72,
+        this.nest.z + Math.sin(angle) * this.nest.radius * rand(0.08, 0.35),
+      );
+      hole.scale.set(rand(1.0, 1.8), rand(0.55, 0.95), 1);
+      this.scene.add(hole);
     }
   }
 
@@ -575,6 +672,7 @@ class Simulation {
     ui.buttons.forEach((button) => {
       button.addEventListener("click", () => {
         this.tool = button.dataset.tool;
+        ui.activeToolLabel.textContent = button.dataset.label;
         ui.buttons.forEach((item) => item.classList.toggle("active", item === button));
       });
     });
@@ -594,259 +692,405 @@ class Simulation {
     ui.intensity.addEventListener("input", () => {
       ui.intensityValue.value = ui.intensity.value;
     });
-    ui.speed.addEventListener("input", () => {
-      const speed = Number(ui.speed.value);
-      this.timeScale = speed;
-      ui.speedValue.value = speed.toFixed(1);
-    });
 
+    const canvas = this.renderer.domElement;
     canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
     canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
     canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
     canvas.addEventListener("pointercancel", (event) => this.onPointerUp(event));
   }
 
-  frame(time) {
-    const dt = Math.min((time - this.lastFrame) / 1000, 0.05);
-    this.lastFrame = time;
+  reset() {
+    for (const ant of this.ants) this.scene.remove(ant.group);
+    for (const list of [this.water, this.stones, this.food, this.branches, this.trails]) {
+      for (const item of list) if (item.group) this.scene.remove(item.group);
+      for (const item of list) if (item.mesh) this.scene.remove(item.mesh);
+    }
+    this.ants = [];
+    this.water = [];
+    this.stones = [];
+    this.food = [];
+    this.branches = [];
+    this.trails = [];
+    this.collectedFood = 0;
+    this.selectedAnt = null;
+    const count = Number(ui.antCount.value);
+    for (let i = 0; i < count; i += 1) this.ants.push(new Ant3D(i + 1, this));
+    this.updateStats();
+    this.updateInspector();
+  }
+
+  resize() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
+    this.renderer.setSize(width, height);
+    this.cameraDistance = width < 680 ? 132 : 128;
+    this.updateCamera();
+  }
+
+  updateCamera() {
+    const horizontal = Math.cos(this.cameraPitch) * this.cameraDistance;
+    const y = Math.sin(this.cameraPitch) * this.cameraDistance;
+    this.camera.position.set(
+      this.cameraTarget.x + Math.sin(this.cameraYaw) * horizontal,
+      y,
+      this.cameraTarget.z + Math.cos(this.cameraYaw) * horizontal,
+    );
+    this.camera.lookAt(this.cameraTarget);
+  }
+
+  animate() {
+    requestAnimationFrame(() => this.animate());
+    const dt = Math.min(this.clock.getDelta(), 0.05);
     if (!this.paused) this.update(dt);
-    this.draw();
-    requestAnimationFrame((next) => this.frame(next));
+    this.renderer.render(this.scene, this.camera);
+    window.__ANT_SIM_READY = true;
   }
 
   update(dt) {
-    for (const water of this.water) {
-      water.age += dt;
-      water.power = Math.max(0.08, water.power - dt * 0.018);
-      water.radius += dt * 1.2;
+    for (const patch of this.water) {
+      patch.age += dt;
+      patch.power = Math.max(0.08, patch.power - dt * 0.014);
+      patch.group.scale.setScalar(1 + Math.sin(patch.age * 2.5) * 0.015);
+      patch.ring.material.opacity = Math.max(0.1, patch.power * 0.44);
+      patch.ring.scale.setScalar(1 + (patch.age % 1) * 0.05);
     }
-    this.water = this.water.filter((water) => water.power > 0.09 && water.age < 80);
+    this.water = this.water.filter((patch) => {
+      if (patch.power > 0.09 && patch.age < 85) return true;
+      this.scene.remove(patch.group);
+      return false;
+    });
 
-    for (const object of this.objects) object.shock = Math.max(0, object.shock - dt * 0.75);
-    for (const branch of this.branches) branch.age += dt;
-    for (const food of this.food) food.age += dt;
-    this.food = this.food.filter((food) => food.amount > 0.06);
+    for (const stone of this.stones) {
+      stone.shock = Math.max(0, stone.shock - dt * 0.7);
+      stone.ring.visible = stone.shock > 0.02;
+      if (stone.ring.visible) {
+        stone.ring.scale.setScalar(1 + (1 - stone.shock) * 7);
+        stone.ring.material.opacity = stone.shock * 0.45;
+      }
+    }
 
-    for (const trail of this.trails) trail.life -= dt * trail.decay;
-    this.trails = this.trails.filter((trail) => trail.life > 0.02).slice(-1100);
+    for (const trail of this.trails) {
+      trail.life -= dt * trail.decay;
+      trail.mesh.material.opacity = Math.max(0, trail.life * trail.baseOpacity);
+      trail.mesh.scale.setScalar(trail.scale * (1 + (1 - trail.life) * 0.2));
+    }
+    this.trails = this.trails.filter((trail) => {
+      if (trail.life > 0.02) return true;
+      this.scene.remove(trail.mesh);
+      return false;
+    });
 
     for (const ant of this.ants) ant.update(dt, this);
-    this.lastUi += dt;
-    if (this.lastUi > 0.15) {
+    this.lastUiUpdate += dt;
+    if (this.lastUiUpdate > 0.15) {
       this.updateStats();
       this.updateInspector();
-      this.lastUi = 0;
+      this.lastUiUpdate = 0;
     }
   }
 
   onPointerDown(event) {
-    const point = this.pointerPoint(event);
-    this.pointer = { down: true, x: point.x, y: point.y, lastX: point.x, lastY: point.y };
-    canvas.setPointerCapture(event.pointerId);
-    if (this.tool === "inspect") {
-      this.selectAnt(point.x, point.y);
-    } else if (this.tool === "water") {
-      this.addWater(point.x, point.y, 1);
-    } else if (this.tool === "stone") {
-      this.addStone(point.x, point.y);
-    } else if (this.tool === "food") {
-      this.addFood(point.x, point.y);
-    } else if (this.tool === "branch") {
-      this.branchDraft = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
-    } else if (this.tool === "eraser") {
-      this.eraseAt(point.x, point.y);
-    }
-  }
-
-  onPointerMove(event) {
-    const point = this.pointerPoint(event);
-    this.pointer.lastX = this.pointer.x;
-    this.pointer.lastY = this.pointer.y;
-    this.pointer.x = point.x;
-    this.pointer.y = point.y;
-
-    if (!this.pointer.down) {
-      if (this.tool === "inspect") this.hoverAnt(point.x, point.y);
+    event.preventDefault();
+    this.renderer.domElement.setPointerCapture(event.pointerId);
+    this.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    this.dragMoved = false;
+    if (this.pointerMap.size === 2) {
+      const points = [...this.pointerMap.values()];
+      this.pinchStart = {
+        distance: Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y),
+        cameraDistance: this.cameraDistance,
+      };
       return;
     }
 
-    if (this.tool === "water" && dist(point.x, point.y, this.pointer.lastX, this.pointer.lastY) > 12) {
-      this.addWater(point.x, point.y, 0.75);
+    const point = this.screenToGround(event.clientX, event.clientY);
+    this.pointerStart = { screenX: event.clientX, screenY: event.clientY, ...point };
+
+    if (!point) return;
+    if (this.tool === "water") this.addWater(point.x, point.z, 1);
+    else if (this.tool === "stone") this.addStone(point.x, point.z);
+    else if (this.tool === "food") this.addFood(point.x, point.z);
+    else if (this.tool === "branch") this.branchDraft = { x1: point.x, z1: point.z, x2: point.x, z2: point.z };
+    else if (this.tool === "erase") this.eraseAt(point.x, point.z);
+  }
+
+  onPointerMove(event) {
+    event.preventDefault();
+    const previous = this.pointerMap.get(event.pointerId);
+    this.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (!previous) return;
+
+    if (this.pointerMap.size === 2 && this.pinchStart) {
+      const points = [...this.pointerMap.values()];
+      const current = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+      this.cameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 72, 168);
+      this.updateCamera();
+      return;
+    }
+
+    const dx = event.clientX - previous.x;
+    const dy = event.clientY - previous.y;
+    if (Math.abs(dx) + Math.abs(dy) > 2) this.dragMoved = true;
+
+    if (this.tool === "inspect") {
+      this.cameraYaw -= dx * 0.006;
+      this.cameraPitch = clamp(this.cameraPitch + dy * 0.004, 0.62, 1.28);
+      this.updateCamera();
+      return;
+    }
+
+    const point = this.screenToGround(event.clientX, event.clientY);
+    if (!point) return;
+    if (this.tool === "water") {
+      const last = this.pointerStart;
+      if (!last || distance2(point.x, point.z, last.x, last.z) > 4.2) {
+        this.addWater(point.x, point.z, 0.72);
+        this.pointerStart = { screenX: event.clientX, screenY: event.clientY, ...point };
+      }
     } else if (this.tool === "branch" && this.branchDraft) {
       this.branchDraft.x2 = point.x;
-      this.branchDraft.y2 = point.y;
-    } else if (this.tool === "eraser") {
-      this.eraseAt(point.x, point.y);
+      this.branchDraft.z2 = point.z;
+      this.updateBranchPreview();
+    } else if (this.tool === "erase") {
+      this.eraseAt(point.x, point.z);
     }
   }
 
   onPointerUp(event) {
-    const point = this.pointerPoint(event);
-    if (this.tool === "branch" && this.branchDraft) {
+    event.preventDefault();
+    const point = this.screenToGround(event.clientX, event.clientY);
+    if (this.tool === "inspect" && point && !this.dragMoved) this.selectNearestAnt(point.x, point.z);
+    if (this.tool === "branch" && this.branchDraft && point) {
       this.branchDraft.x2 = point.x;
-      this.branchDraft.y2 = point.y;
-      if (dist(this.branchDraft.x1, this.branchDraft.y1, this.branchDraft.x2, this.branchDraft.y2) > 24) {
+      this.branchDraft.z2 = point.z;
+      if (distance2(this.branchDraft.x1, this.branchDraft.z1, this.branchDraft.x2, this.branchDraft.z2) > 7) {
         this.addBranch(this.branchDraft);
       }
+      this.clearBranchPreview();
       this.branchDraft = null;
     }
-    this.pointer.down = false;
+    this.pointerMap.delete(event.pointerId);
+    if (this.pointerMap.size < 2) this.pinchStart = null;
   }
 
-  pointerPoint(event) {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
-    };
+  screenToGround(clientX, clientY) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -(((clientY - rect.top) / rect.height) * 2 - 1));
+    this.raycaster.setFromCamera(this.ndc, this.camera);
+    const hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHit);
+    if (!hit) return null;
+    const d = Math.hypot(hit.x, hit.z);
+    if (d > this.worldRadius + 7) return null;
+    return { x: hit.x, z: hit.z };
   }
 
-  addWater(x, y, scale = 1) {
+  addWater(x, z, scale = 1) {
     const intensity = Number(ui.intensity.value);
-    this.water.push({
-      x,
-      y,
-      radius: rand(24, 34) + intensity * 8 * scale,
-      power: clamp(0.42 + intensity * 0.14 * scale, 0.35, 1.05),
-      age: 0,
-      seed: Math.random() * 1000,
-    });
-    if (chance(0.28)) this.log("水で隊列が分断された");
+    const radius = 5.5 + intensity * 1.6 * scale + rand(-0.4, 0.8);
+    const group = new THREE.Group();
+    const pool = new THREE.Mesh(this.geometries.waterCircle, this.materials.water.clone());
+    pool.rotation.x = -Math.PI / 2;
+    pool.scale.set(radius * 1.18, radius * 0.82, 1);
+    pool.position.y = 0.035;
+    group.add(pool);
+    const ring = new THREE.Mesh(this.geometries.impactRing, this.materials.waterRing.clone());
+    ring.rotation.x = Math.PI / 2;
+    ring.scale.set(radius * 0.85, radius * 0.85, radius * 0.85);
+    ring.position.y = 0.08;
+    group.add(ring);
+    group.position.set(x, 0, z);
+    this.scene.add(group);
+    this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring });
   }
 
-  addStone(x, y) {
+  addStone(x, z) {
     const intensity = Number(ui.intensity.value);
-    const radius = 18 + intensity * 7 + rand(-3, 5);
-    const object = {
-      x,
-      y,
-      radius,
-      shock: 1,
-      seed: Math.random() * 1000,
-      verts: Array.from({ length: 9 }, (_, index) => {
-        const a = (index / 9) * Math.PI * 2;
-        return { a, r: radius * rand(0.72, 1.08) };
-      }),
-    };
-    this.objects.push(object);
-    let affected = 0;
+    const radius = 3.1 + intensity * 0.85 + rand(-0.2, 0.4);
+    const group = new THREE.Group();
+    const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(radius, 0), this.materials.stone);
+    stone.position.y = radius * 0.46;
+    stone.scale.y = 0.58;
+    stone.rotation.set(rand(-0.4, 0.4), rand(0, Math.PI), rand(-0.3, 0.3));
+    group.add(stone);
+    const ring = new THREE.Mesh(this.geometries.impactRing, this.materials.impact.clone());
+    ring.rotation.x = Math.PI / 2;
+    ring.scale.set(radius * 1.1, radius * 1.1, radius * 1.1);
+    ring.position.y = 0.12;
+    group.add(ring);
+    group.position.set(x, 0, z);
+    this.scene.add(group);
+
+    const item = { x, z, radius, shock: 1, group, ring };
+    this.stones.push(item);
     for (const ant of this.ants) {
-      const d = dist(ant.x, ant.y, x, y);
-      if (d < radius + 120) {
-        ant.shock((1 - d / (radius + 120)) * (0.8 + intensity * 0.12));
-        affected += 1;
-      }
+      const d = distance2(ant.x, ant.z, x, z);
+      if (d < radius + 28) ant.shock((1 - d / (radius + 28)) * (0.78 + intensity * 0.13));
     }
-    this.log(`落下物で ${affected} 匹が反応した`);
   }
 
-  addFood(x, y) {
-    const amount = 8 + Number(ui.intensity.value) * 4;
-    this.food.push({
-      x,
-      y,
-      radius: 20 + Number(ui.intensity.value) * 3,
-      amount,
-      initialAmount: amount,
-      age: 0,
-      seed: Math.random() * 1000,
+  addFood(x, z) {
+    const intensity = Number(ui.intensity.value);
+    const amount = 7 + intensity * 4;
+    const group = new THREE.Group();
+    const item = { x, z, radius: 4.5 + intensity * 0.7, amount, initialAmount: amount, group, crumbs: [] };
+    for (let i = 0; i < 18; i += 1) {
+      const crumb = new THREE.Mesh(this.geometries.foodCrumb, this.materials.food);
+      const a = rand(0, Math.PI * 2);
+      const r = rand(0, item.radius);
+      crumb.position.set(Math.cos(a) * r, 0.52 + rand(0, 0.45), Math.sin(a) * r);
+      crumb.scale.setScalar(rand(0.26, 0.58));
+      group.add(crumb);
+      item.crumbs.push(crumb);
+    }
+    group.position.set(x, 0, z);
+    this.scene.add(group);
+    this.food.push(item);
+  }
+
+  refreshFoodMesh(food) {
+    const ratio = clamp(food.amount / food.initialAmount, 0, 1);
+    food.crumbs.forEach((crumb, index) => {
+      crumb.visible = index / food.crumbs.length < ratio;
     });
-    this.log("餌に探索個体が集まり始めた");
+    if (food.amount <= 0.05) {
+      this.scene.remove(food.group);
+      this.food = this.food.filter((item) => item !== food);
+    }
   }
 
   addBranch(branch) {
-    this.branches.push({
-      ...branch,
-      width: 9 + Number(ui.intensity.value) * 1.6,
-      age: 0,
-      seed: Math.random() * 1000,
-    });
-    this.log("枝で経路が変わった");
+    const dx = branch.x2 - branch.x1;
+    const dz = branch.z2 - branch.z1;
+    const length = Math.hypot(dx, dz);
+    const width = 1.35 + Number(ui.intensity.value) * 0.18;
+    const geometry = new THREE.CylinderGeometry(width, width * 0.75, length, 10);
+    const mesh = new THREE.Mesh(geometry, this.materials.branch);
+    mesh.position.set((branch.x1 + branch.x2) / 2, width * 0.95, (branch.z1 + branch.z2) / 2);
+    const direction = new THREE.Vector3(dx, 0, dz).normalize();
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    this.scene.add(mesh);
+    this.branches.push({ ...branch, width: width * 1.45, group: mesh });
   }
 
-  eraseAt(x, y) {
-    const r = 42;
-    this.water = this.water.filter((item) => dist(item.x, item.y, x, y) > r + item.radius * 0.4);
-    this.objects = this.objects.filter((item) => dist(item.x, item.y, x, y) > r + item.radius * 0.4);
-    this.food = this.food.filter((item) => dist(item.x, item.y, x, y) > r + item.radius * 0.4);
-    this.branches = this.branches.filter((item) => {
-      const p = nearestPointOnSegment(x, y, item.x1, item.y1, item.x2, item.y2);
-      return dist(x, y, p.x, p.y) > r + item.width;
+  updateBranchPreview() {
+    this.clearBranchPreview();
+    if (!this.branchDraft) return;
+    const dx = this.branchDraft.x2 - this.branchDraft.x1;
+    const dz = this.branchDraft.z2 - this.branchDraft.z1;
+    const length = Math.hypot(dx, dz);
+    if (length < 0.5) return;
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.7, 0.6, length, 8),
+      new THREE.MeshBasicMaterial({ color: 0x51b7a6, transparent: true, opacity: 0.58 }),
+    );
+    mesh.position.set((this.branchDraft.x1 + this.branchDraft.x2) / 2, 0.7, (this.branchDraft.z1 + this.branchDraft.z2) / 2);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dz).normalize());
+    this.branchPreview = mesh;
+    this.scene.add(mesh);
+  }
+
+  clearBranchPreview() {
+    if (this.branchPreview) {
+      this.scene.remove(this.branchPreview);
+      this.branchPreview = null;
+    }
+  }
+
+  eraseAt(x, z) {
+    const radius = 7;
+    const removeFrom = (list, predicate) => {
+      for (const item of [...list]) {
+        if (predicate(item)) {
+          if (item.group) this.scene.remove(item.group);
+          if (item.mesh) this.scene.remove(item.mesh);
+          const index = list.indexOf(item);
+          if (index >= 0) list.splice(index, 1);
+        }
+      }
+    };
+    removeFrom(this.water, (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45);
+    removeFrom(this.stones, (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45);
+    removeFrom(this.food, (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45);
+    removeFrom(this.branches, (item) => {
+      const p = closestPointOnSegment(x, z, item.x1, item.z1, item.x2, item.z2);
+      return distance2(x, z, p.x, p.z) < radius + item.width;
     });
   }
 
-  addTrail(x, y, kind, strength) {
+  addTrail(x, z, kind, strength) {
+    const material =
+      kind === "food"
+        ? this.materials.trailFood.clone()
+        : kind === "alarm"
+          ? this.materials.trailAlarm.clone()
+          : kind === "rescue"
+            ? this.materials.trailRescue.clone()
+            : this.materials.trailWater.clone();
+    const mesh = new THREE.Mesh(this.geometries.trailCircle, material);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, 0.045, z);
+    const scale = kind === "alarm" ? 1.3 : 0.85;
+    mesh.scale.setScalar(scale);
+    this.scene.add(mesh);
     this.trails.push({
       x,
-      y,
+      z,
       kind,
       life: strength,
-      decay: kind === "food" ? 0.055 : kind === "alarm" ? 0.34 : 0.16,
+      decay: kind === "food" ? 0.045 : kind === "alarm" ? 0.32 : 0.14,
+      mesh,
+      scale,
+      baseOpacity: material.opacity,
     });
+    if (this.trails.length > 520) {
+      const old = this.trails.shift();
+      this.scene.remove(old.mesh);
+    }
   }
 
   findRescueCandidate(helper) {
     let best = null;
-    let bestD = Infinity;
+    let bestDistance = Infinity;
     for (const ant of this.ants) {
       if (ant === helper || ant.stun <= 0) continue;
-      const d = dist(helper.x, helper.y, ant.x, ant.y);
-      if (d < bestD && d < 105) {
+      const d = distance2(helper.x, helper.z, ant.x, ant.z);
+      if (d < bestDistance && d < 22) {
         best = ant;
-        bestD = d;
+        bestDistance = d;
       }
     }
     return best;
   }
 
-  selectAnt(x, y) {
+  selectNearestAnt(x, z) {
     let best = null;
-    let bestD = 16;
+    let bestDistance = 5;
     for (const ant of this.ants) {
-      const d = dist(ant.x, ant.y, x, y);
-      if (d < bestD) {
+      const d = distance2(x, z, ant.x, ant.z);
+      if (d < bestDistance) {
         best = ant;
-        bestD = d;
+        bestDistance = d;
       }
     }
     this.selectedAnt = best;
     this.updateInspector();
   }
 
-  hoverAnt(x, y) {
-    if (this.selectedAnt) return;
-    let best = null;
-    let bestD = 12;
-    for (const ant of this.ants) {
-      const d = dist(ant.x, ant.y, x, y);
-      if (d < bestD) {
-        best = ant;
-        bestD = d;
-      }
-    }
-    if (best) {
-      this.selectedAnt = best;
-      this.updateInspector();
-      setTimeout(() => {
-        if (this.selectedAnt === best && !this.pointer.down) {
-          this.selectedAnt = null;
-          this.updateInspector();
-        }
-      }, 900);
-    }
-  }
-
   updateStats() {
     let explore = 0;
-    let panic = 0;
+    let alert = 0;
     let rescue = 0;
     for (const ant of this.ants) {
-      if (ant.state === "panic" || ant.state === "wet" || ant.state === "stunned") panic += 1;
+      if (ant.state === "panic" || ant.state === "wet" || ant.state === "stunned") alert += 1;
       else if (ant.state === "rescue") rescue += 1;
       else explore += 1;
     }
     ui.statExplore.textContent = explore;
-    ui.statPanic.textContent = panic;
+    ui.statAlert.textContent = alert;
     ui.statRescue.textContent = rescue;
     ui.statFood.textContent = Math.floor(this.collectedFood);
   }
@@ -854,275 +1098,19 @@ class Simulation {
   updateInspector() {
     const ant = this.selectedAnt;
     if (!ant) {
-      ui.inspector.innerHTML = '<span class="muted">未選択</span>';
+      ui.inspector.innerHTML = '<span class="muted">個体未選択</span>';
       return;
     }
-    const trait = (label, value) => `
-      <div class="trait-row">
-        <span>${label}</span>
-        <span class="trait-meter" aria-hidden="true"><span style="--value:${Math.round(value * 100)}%"></span></span>
-      </div>`;
     ui.inspector.innerHTML = `
-      <strong>個体 ${ant.id}</strong> / ${ROLE_LABELS[ant.role]} / ${STATE_LABELS[ant.state]}
-      ${trait("好奇心", ant.traits.curiosity)}
-      ${trait("警戒心", ant.traits.caution)}
-      ${trait("協調性", ant.traits.social)}
-      ${trait("粘り", ant.traits.persistence)}
+      <strong>個体 ${ant.id} / ${ROLE_LABELS[ant.role]} / ${STATE_LABELS[ant.state]}</strong>
+      <div class="trait-grid">
+        <span>好奇心 ${Math.round(ant.traits.curiosity * 100)}</span>
+        <span>警戒心 ${Math.round(ant.traits.caution * 100)}</span>
+        <span>協調性 ${Math.round(ant.traits.social * 100)}</span>
+        <span>粘り ${Math.round(ant.traits.persistence * 100)}</span>
+      </div>
     `;
-  }
-
-  log(message) {
-    const item = document.createElement("li");
-    item.textContent = message;
-    ui.log.prepend(item);
-    while (ui.log.children.length > 8) ui.log.lastElementChild.remove();
-  }
-
-  draw() {
-    ctx.clearRect(0, 0, this.width, this.height);
-    this.drawGround();
-    this.drawTrails();
-    this.drawWater();
-    this.drawFood();
-    this.drawObjects();
-    this.drawBranches();
-    this.drawNest();
-    this.drawAnts();
-    this.drawBranchDraft();
-  }
-
-  drawGround() {
-    const gradient = ctx.createLinearGradient(0, 0, this.width, this.height);
-    gradient.addColorStop(0, "#d9c58c");
-    gradient.addColorStop(0.45, "#cab073");
-    gradient.addColorStop(1, "#b8945b");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, this.width, this.height);
-
-    for (const speck of this.ground) {
-      ctx.beginPath();
-      ctx.fillStyle = speck.tone > 0.5 ? "rgba(77, 55, 31, 0.16)" : "rgba(255, 242, 190, 0.16)";
-      ctx.arc(speck.x, speck.y, speck.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  drawNest() {
-    const { x, y, radius } = this.nest;
-    const nestGradient = ctx.createRadialGradient(x - radius * 0.2, y - radius * 0.24, 4, x, y, radius * 1.15);
-    nestGradient.addColorStop(0, "#8f6a39");
-    nestGradient.addColorStop(0.75, "#5f462a");
-    nestGradient.addColorStop(1, "rgba(50, 33, 18, 0)");
-    ctx.fillStyle = nestGradient;
-    ctx.beginPath();
-    ctx.ellipse(x, y, radius * 1.28, radius * 0.86, -0.12, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = "rgba(20, 14, 10, 0.5)";
-    for (let i = 0; i < 5; i += 1) {
-      const a = i * 1.26 + 0.4;
-      const hx = x + Math.cos(a) * radius * (0.08 + seededNoise(i + 21) * 0.4);
-      const hy = y + Math.sin(a) * radius * (0.04 + seededNoise(i + 37) * 0.28);
-      ctx.beginPath();
-      ctx.ellipse(hx, hy, radius * 0.12, radius * 0.07, a, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  drawTrails() {
-    for (const trail of this.trails) {
-      if (trail.kind === "food") ctx.fillStyle = `rgba(181, 121, 31, ${trail.life * 0.22})`;
-      else if (trail.kind === "alarm") ctx.fillStyle = `rgba(178, 74, 53, ${trail.life * 0.22})`;
-      else if (trail.kind === "rescue") ctx.fillStyle = `rgba(35, 124, 107, ${trail.life * 0.18})`;
-      else ctx.fillStyle = `rgba(45, 139, 184, ${trail.life * 0.16})`;
-      ctx.beginPath();
-      ctx.arc(trail.x, trail.y, trail.kind === "food" ? 3 : 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  drawWater() {
-    for (const water of this.water) {
-      const alpha = clamp(water.power, 0.1, 0.78);
-      const gradient = ctx.createRadialGradient(water.x, water.y, water.radius * 0.12, water.x, water.y, water.radius);
-      gradient.addColorStop(0, `rgba(102, 185, 219, ${0.32 * alpha})`);
-      gradient.addColorStop(0.72, `rgba(45, 139, 184, ${0.26 * alpha})`);
-      gradient.addColorStop(1, "rgba(45, 139, 184, 0)");
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.ellipse(
-        water.x,
-        water.y,
-        water.radius * (1.15 + seededNoise(water.seed) * 0.22),
-        water.radius * (0.74 + seededNoise(water.seed + 2) * 0.2),
-        seededNoise(water.seed + 5) * Math.PI,
-        0,
-        Math.PI * 2,
-      );
-      ctx.fill();
-
-      ctx.strokeStyle = `rgba(235, 250, 255, ${0.28 * alpha})`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.ellipse(water.x, water.y, water.radius * 0.72, water.radius * 0.42, water.age * 0.8, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
-
-  drawFood() {
-    for (const food of this.food) {
-      const remaining = clamp(food.amount / food.initialAmount, 0, 1);
-      for (let i = 0; i < 16; i += 1) {
-        const seed = food.seed + i * 9.1;
-        const a = seededNoise(seed) * Math.PI * 2;
-        const r = seededNoise(seed + 1) * food.radius * remaining;
-        const x = food.x + Math.cos(a) * r;
-        const y = food.y + Math.sin(a) * r;
-        ctx.fillStyle = i % 3 === 0 ? "#d7b54f" : "#a96f1d";
-        ctx.beginPath();
-        ctx.arc(x, y, 2 + seededNoise(seed + 2) * 2.2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
-
-  drawObjects() {
-    for (const object of this.objects) {
-      ctx.save();
-      ctx.translate(object.x, object.y);
-      ctx.fillStyle = "rgba(30, 33, 27, 0.18)";
-      ctx.beginPath();
-      ctx.ellipse(5, 7, object.radius * 0.95, object.radius * 0.38, 0.15, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.beginPath();
-      object.verts.forEach((vert, index) => {
-        const x = Math.cos(vert.a) * vert.r;
-        const y = Math.sin(vert.a) * vert.r * 0.82;
-        if (index === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.closePath();
-      const gradient = ctx.createLinearGradient(-object.radius, -object.radius, object.radius, object.radius);
-      gradient.addColorStop(0, "#7d827b");
-      gradient.addColorStop(1, "#3f4542");
-      ctx.fillStyle = gradient;
-      ctx.fill();
-      ctx.strokeStyle = "rgba(28, 31, 28, 0.28)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.restore();
-
-      if (object.shock > 0.03) {
-        ctx.strokeStyle = `rgba(178, 74, 53, ${object.shock * 0.28})`;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(object.x, object.y, object.radius + (1 - object.shock) * 120, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-  }
-
-  drawBranches() {
-    ctx.lineCap = "round";
-    for (const branch of this.branches) {
-      ctx.strokeStyle = "rgba(48, 37, 22, 0.28)";
-      ctx.lineWidth = branch.width + 5;
-      ctx.beginPath();
-      ctx.moveTo(branch.x1 + 3, branch.y1 + 3);
-      ctx.lineTo(branch.x2 + 3, branch.y2 + 3);
-      ctx.stroke();
-      ctx.strokeStyle = "#6d5630";
-      ctx.lineWidth = branch.width;
-      ctx.beginPath();
-      ctx.moveTo(branch.x1, branch.y1);
-      ctx.lineTo(branch.x2, branch.y2);
-      ctx.stroke();
-      ctx.strokeStyle = "rgba(238, 210, 130, 0.28)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(branch.x1, branch.y1 - 2);
-      ctx.lineTo(branch.x2, branch.y2 - 2);
-      ctx.stroke();
-    }
-  }
-
-  drawBranchDraft() {
-    if (!this.branchDraft) return;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = "rgba(35, 124, 107, 0.55)";
-    ctx.lineWidth = 8;
-    ctx.setLineDash([6, 7]);
-    ctx.beginPath();
-    ctx.moveTo(this.branchDraft.x1, this.branchDraft.y1);
-    ctx.lineTo(this.branchDraft.x2, this.branchDraft.y2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  drawAnts() {
-    for (const ant of this.ants) this.drawAnt(ant);
-  }
-
-  drawAnt(ant) {
-    ctx.save();
-    ctx.translate(ant.x, ant.y);
-    ctx.rotate(ant.angle);
-
-    const selected = this.selectedAnt === ant;
-    if (selected) {
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.86)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(0, 0, 10, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    let body = "#1d1a15";
-    if (ant.state === "panic") body = "#7d261e";
-    if (ant.state === "wet") body = "#174d66";
-    if (ant.state === "stunned") body = "#4c5152";
-    if (ant.state === "rescue") body = "#17594e";
-    if (ant.carrying > 0) body = "#382610";
-
-    ctx.strokeStyle = "rgba(20, 18, 14, 0.9)";
-    ctx.lineWidth = 1;
-    for (let side = -1; side <= 1; side += 2) {
-      for (let i = -1; i <= 1; i += 1) {
-        ctx.beginPath();
-        ctx.moveTo(i * 2, side * 2);
-        ctx.lineTo(i * 4 - 2, side * 6);
-        ctx.stroke();
-      }
-    }
-
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.ellipse(-4.8, 0, 4.4, 3.1, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 3.6, 2.7, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(4.5, 0, 3.2, 2.4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    if (ant.wet > 0.25) {
-      ctx.fillStyle = `rgba(74, 178, 218, ${clamp(ant.wet * 0.45, 0, 0.55)})`;
-      ctx.beginPath();
-      ctx.ellipse(-1, 0, 7, 3.8, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    if (ant.carrying > 0) {
-      ctx.fillStyle = "#d3a73d";
-      ctx.beginPath();
-      ctx.arc(8.2, 0, 2.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.restore();
   }
 }
 
-new Simulation();
+new AntColony3D();
