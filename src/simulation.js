@@ -15,7 +15,85 @@ const ui = {
   statRescue: document.querySelector("#statRescue"),
   statFood: document.querySelector("#statFood"),
   inspector: document.querySelector("#inspector"),
+  loadingOverlay: document.querySelector("#loadingOverlay"),
+  loadingBar: document.querySelector("#loadingBar"),
+  loadingLabel: document.querySelector("#loadingLabel"),
+  errorPanel: document.querySelector("#errorPanel"),
+  errorMessage: document.querySelector("#errorMessage"),
+  debugPanel: document.querySelector("#debugPanel"),
+  debugMetrics: document.querySelector("#debugMetrics"),
+  qualitySelect: document.querySelector("#qualitySelect"),
 };
+
+const FIXED_DT = 1 / 60;
+const MAX_FRAME_DELTA = 0.25;
+const MAX_FIXED_STEPS = 5;
+const DEBUG_QUERY = new URLSearchParams(window.location.search);
+const IS_DEBUG = DEBUG_QUERY.get("debug") === "1";
+
+const QUALITY_PRESETS = {
+  low: {
+    label: "low",
+    resolutionScale: 0.78,
+    maxPixelRatio: 1.15,
+    antialias: false,
+    shadowQuality: "off",
+    postprocessQuality: "off",
+    effectsQuality: 0.7,
+    toneMappingExposure: 0.95,
+  },
+  medium: {
+    label: "medium",
+    resolutionScale: 0.9,
+    maxPixelRatio: 1.45,
+    antialias: true,
+    shadowQuality: "low",
+    postprocessQuality: "off",
+    effectsQuality: 1,
+    toneMappingExposure: 1,
+  },
+  high: {
+    label: "high",
+    resolutionScale: 1,
+    maxPixelRatio: 1.8,
+    antialias: true,
+    shadowQuality: "medium",
+    postprocessQuality: "off",
+    effectsQuality: 1,
+    toneMappingExposure: 1.05,
+  },
+};
+
+function readStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Non-critical user preference persistence can fail in private or locked-down contexts.
+  }
+}
+
+function chooseQualityPreset() {
+  const queryQuality = DEBUG_QUERY.get("quality");
+  const savedQuality = readStorage("ant3d.quality");
+  const autoQuality = window.matchMedia("(pointer: coarse)").matches || window.innerWidth < 680 ? "medium" : "high";
+  const qualityName = queryQuality || savedQuality || autoQuality;
+  const preset = QUALITY_PRESETS[qualityName] ?? QUALITY_PRESETS.medium;
+  const resolutionScale = Number(DEBUG_QUERY.get("resolutionScale"));
+  const maxPixelRatio = Number(DEBUG_QUERY.get("maxPixelRatio"));
+  return {
+    ...preset,
+    resolutionScale: Number.isFinite(resolutionScale) && resolutionScale > 0 ? clamp(resolutionScale, 0.5, 1.2) : preset.resolutionScale,
+    maxPixelRatio: Number.isFinite(maxPixelRatio) && maxPixelRatio > 0 ? clamp(maxPixelRatio, 0.8, 2) : preset.maxPixelRatio,
+  };
+}
 
 const ROLE_LABELS = {
   scout: "斥候",
@@ -77,6 +155,154 @@ function makeGroundTexture() {
   return texture;
 }
 
+function getMaterialList(material) {
+  if (!material) return [];
+  return Array.isArray(material) ? material : [material];
+}
+
+function disposeMaterial(material) {
+  for (const item of getMaterialList(material)) {
+    for (const value of Object.values(item)) {
+      if (value && value.isTexture) value.dispose();
+    }
+    item.dispose();
+  }
+}
+
+function disposeObject3D(root, { skipGeometries = new Set(), skipMaterials = new Set() } = {}) {
+  root.traverse((object) => {
+    if (object.geometry && !skipGeometries.has(object.geometry)) object.geometry.dispose();
+    for (const material of getMaterialList(object.material)) {
+      if (material && !skipMaterials.has(material)) disposeMaterial(material);
+    }
+  });
+  root.parent?.remove(root);
+}
+
+class LoadingScreen {
+  constructor(elements) {
+    this.overlay = elements.overlay;
+    this.bar = elements.bar;
+    this.label = elements.label;
+    this.errorPanel = elements.errorPanel;
+    this.errorMessage = elements.errorMessage;
+  }
+
+  setProgress(label, loaded = 0, total = 1) {
+    if (!this.overlay) return;
+    const progress = total > 0 ? clamp((loaded / total) * 100, 3, 100) : 20;
+    this.label.textContent = label;
+    this.bar.style.width = `${progress}%`;
+  }
+
+  hide() {
+    if (!this.overlay) return;
+    this.overlay.classList.add("is-hidden");
+    window.setTimeout(() => {
+      this.overlay.hidden = true;
+    }, 220);
+  }
+
+  showError(message) {
+    if (this.overlay) this.overlay.hidden = true;
+    if (!this.errorPanel) return;
+    this.errorMessage.textContent = message;
+    this.errorPanel.hidden = false;
+  }
+}
+
+class AssetService {
+  constructor(loadingScreen) {
+    this.loadingScreen = loadingScreen;
+    this.manager = new THREE.LoadingManager(
+      () => this.loadingScreen.setProgress("ready", 1, 1),
+      (_url, loaded, total) => this.loadingScreen.setProgress("assets", loaded, total),
+      (url) => this.loadingScreen.showError(`Asset failed to load: ${url}`),
+    );
+    this.cache = new Map();
+  }
+
+  preloadProceduralAssets() {
+    this.manager.itemStart("procedural-ground");
+    const groundTexture = makeGroundTexture();
+    groundTexture.anisotropy = 4;
+    this.cache.set("groundTexture", groundTexture);
+    this.manager.itemEnd("procedural-ground");
+  }
+
+  get(name) {
+    return this.cache.get(name);
+  }
+
+  dispose() {
+    for (const asset of this.cache.values()) {
+      if (asset && typeof asset.dispose === "function") asset.dispose();
+    }
+    this.cache.clear();
+  }
+}
+
+class InputManager {
+  constructor(sim, element) {
+    this.sim = sim;
+    this.element = element;
+    this.handlers = {
+      pointerdown: (event) => sim.onPointerDown(event),
+      pointermove: (event) => sim.onPointerMove(event),
+      pointerup: (event) => sim.onPointerUp(event),
+      pointercancel: (event) => sim.onPointerUp(event),
+    };
+    for (const [type, handler] of Object.entries(this.handlers)) {
+      element.addEventListener(type, handler, { passive: false });
+    }
+  }
+
+  dispose() {
+    for (const [type, handler] of Object.entries(this.handlers)) {
+      this.element.removeEventListener(type, handler);
+    }
+  }
+}
+
+class DebugPanel {
+  constructor(sim) {
+    this.sim = sim;
+    this.enabled = IS_DEBUG;
+    this.elapsed = 0;
+    this.frames = 0;
+    this.frameMs = 0;
+    if (!this.enabled) return;
+    ui.debugPanel.hidden = false;
+    ui.qualitySelect.value = sim.quality.label;
+    ui.qualitySelect.addEventListener("change", () => {
+      writeStorage("ant3d.quality", ui.qualitySelect.value);
+      window.location.reload();
+    });
+  }
+
+  sample(dt) {
+    if (!this.enabled) return;
+    this.elapsed += dt;
+    this.frames += 1;
+    if (this.elapsed < 0.5) return;
+    const info = this.sim.renderer.info;
+    this.frameMs = (this.elapsed / this.frames) * 1000;
+    ui.debugMetrics.textContent = [
+      `frame ${this.frameMs.toFixed(1)}ms`,
+      `fps ${(1000 / this.frameMs).toFixed(0)}`,
+      `pixelRatio ${this.sim.currentPixelRatio.toFixed(2)}`,
+      `calls ${info.render.calls}`,
+      `triangles ${info.render.triangles}`,
+      `geometries ${info.memory.geometries}`,
+      `textures ${info.memory.textures}`,
+      `ants ${this.sim.ants.length}`,
+      `objects ${this.sim.water.length + this.sim.stones.length + this.sim.food.length + this.sim.branches.length}`,
+    ].join("\n");
+    this.elapsed = 0;
+    this.frames = 0;
+  }
+}
+
 class Ant3D {
   constructor(id, sim) {
     this.id = id;
@@ -98,6 +324,17 @@ class Ant3D {
     this.lastTrail = rand(0, 1);
     this.homeTimer = rand(0, 8);
     this.rescueTarget = null;
+    this.prevX = this.x;
+    this.prevZ = this.z;
+    this.prevAngle = this.angle;
+    this.steering = { x: 0, z: 0 };
+    this.sensed = {
+      hazard: { x: 0, z: 0 },
+      waterDepth: 0,
+      alarm: 0,
+      closestFood: null,
+      foodDistance: Infinity,
+    };
     this.traits = {
       curiosity: rand(0.18, 1),
       caution: rand(0.16, 1),
@@ -118,7 +355,7 @@ class Ant3D {
 
     this.group = this.createMesh(sim);
     sim.scene.add(this.group);
-    this.updateMesh(sim);
+    this.render(sim, 1);
   }
 
   pickRole() {
@@ -139,6 +376,10 @@ class Ant3D {
     const head = new THREE.Mesh(sim.geometries.antSphere, sim.materials.antDefault);
     head.scale.set(0.66, 0.45, 0.62);
     head.position.z = 1.1;
+    for (const mesh of [abdomen, thorax, head]) {
+      mesh.castShadow = sim.quality.shadowQuality !== "off";
+      mesh.receiveShadow = false;
+    }
     group.add(abdomen, thorax, head);
     this.bodyParts = [abdomen, thorax, head];
 
@@ -152,11 +393,13 @@ class Ant3D {
     legGeometry.setAttribute("position", new THREE.Float32BufferAttribute(legPositions, 3));
     const legs = new THREE.LineSegments(legGeometry, sim.materials.antLegs);
     group.add(legs);
+    this.legGeometry = legGeometry;
 
     const load = new THREE.Mesh(sim.geometries.foodCrumb, sim.materials.food);
     load.position.set(0, 0.14, 1.9);
     load.scale.setScalar(0.72);
     load.visible = false;
+    load.castShadow = sim.quality.shadowQuality !== "off";
     group.add(load);
     this.loadMesh = load;
 
@@ -164,6 +407,9 @@ class Ant3D {
   }
 
   update(dt, sim) {
+    this.prevX = this.x;
+    this.prevZ = this.z;
+    this.prevAngle = this.angle;
     this.stateTime += dt;
     this.homeTimer += dt;
     this.wet = Math.max(0, this.wet - dt * 0.11);
@@ -189,13 +435,11 @@ class Ant3D {
       this.z += Math.sin(this.angle + rand(-1.5, 1.5)) * dt * 0.8;
       if (this.stun <= 0 && this.wet < 0.76) this.setState("wet");
       this.keepInWorld(sim);
-      this.updateMesh(sim);
       return;
     }
 
     if (this.state === "stunned") {
       this.stun = rand(1.1, 3);
-      this.updateMesh(sim);
       return;
     }
 
@@ -207,7 +451,9 @@ class Ant3D {
       }
     }
 
-    const steering = { x: 0, z: 0 };
+    const steering = this.steering;
+    steering.x = 0;
+    steering.z = 0;
     this.addSeparation(steering, sim);
     this.addObstacleAvoidance(steering, sim);
     steering.x += sensed.hazard.x * (1.2 + this.traits.caution);
@@ -221,7 +467,6 @@ class Ant3D {
 
     this.move(dt, sim, steering);
     this.leaveTrail(sim);
-    this.updateMesh(sim);
   }
 
   setState(nextState) {
@@ -232,11 +477,14 @@ class Ant3D {
   }
 
   sense(sim) {
-    const hazard = { x: 0, z: 0 };
-    let waterDepth = 0;
-    let alarm = 0;
-    let closestFood = null;
-    let foodDistance = Infinity;
+    const sensed = this.sensed;
+    const hazard = sensed.hazard;
+    hazard.x = 0;
+    hazard.z = 0;
+    sensed.waterDepth = 0;
+    sensed.alarm = 0;
+    sensed.closestFood = null;
+    sensed.foodDistance = Infinity;
 
     for (const patch of sim.water) {
       const d = distance2(this.x, this.z, patch.x, patch.z);
@@ -245,7 +493,7 @@ class Ant3D {
         const strength = (1 - d / reach) * patch.power;
         hazard.x += ((this.x - patch.x) / (d || 1)) * strength * 1.7;
         hazard.z += ((this.z - patch.z) / (d || 1)) * strength * 1.7;
-        if (d < patch.radius) waterDepth = Math.max(waterDepth, (1 - d / patch.radius) * patch.power);
+        if (d < patch.radius) sensed.waterDepth = Math.max(sensed.waterDepth, (1 - d / patch.radius) * patch.power);
       }
     }
 
@@ -258,7 +506,7 @@ class Ant3D {
         hazard.z += ((this.z - stone.z) / (d || 1)) * strength * 1.25;
       }
       if (stone.shock > 0 && d < stone.radius + stone.shock * 34) {
-        alarm = Math.max(alarm, stone.shock * (1 - d / (stone.radius + stone.shock * 34)));
+        sensed.alarm = Math.max(sensed.alarm, stone.shock * (1 - d / (stone.radius + stone.shock * 34)));
       }
     }
 
@@ -277,7 +525,7 @@ class Ant3D {
       const d = distance2(this.x, this.z, trail.x, trail.z);
       if (trail.kind === "alarm" && d < 12) {
         const strength = trail.life * (1 - d / 12);
-        alarm = Math.max(alarm, strength);
+        sensed.alarm = Math.max(sensed.alarm, strength);
         hazard.x += ((this.x - trail.x) / (d || 1)) * strength * 0.7;
         hazard.z += ((this.z - trail.z) / (d || 1)) * strength * 0.7;
       }
@@ -286,13 +534,13 @@ class Ant3D {
     for (const food of sim.food) {
       if (food.amount <= 0) continue;
       const d = distance2(this.x, this.z, food.x, food.z);
-      if (d < foodDistance) {
-        foodDistance = d;
-        closestFood = food;
+      if (d < sensed.foodDistance) {
+        sensed.foodDistance = d;
+        sensed.closestFood = food;
       }
     }
 
-    return { hazard, waterDepth, alarm, closestFood, foodDistance };
+    return sensed;
   }
 
   updateExplore(dt, sim, steering, sensed) {
@@ -507,34 +755,49 @@ class Ant3D {
     }
   }
 
-  updateMesh(sim) {
+  render(sim, alpha) {
     const material = sim.materials.antByState[this.state] ?? sim.materials.antDefault;
     for (const part of this.bodyParts) part.material = material;
     this.loadMesh.visible = this.carrying > 0;
-    this.group.position.set(this.x, 0.72 + Math.sin(performance.now() * 0.006 + this.id) * 0.03, this.z);
-    this.group.rotation.y = this.angle;
+    const x = this.prevX + (this.x - this.prevX) * alpha;
+    const z = this.prevZ + (this.z - this.prevZ) * alpha;
+    const angle = this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha;
+    this.group.position.set(x, 0.72 + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03, z);
+    this.group.rotation.y = angle;
     const scale = this.state === "stunned" ? 0.82 : 1;
     this.group.scale.setScalar(scale);
+  }
+
+  destroy(scene) {
+    scene.remove(this.group);
+    this.legGeometry.dispose();
   }
 }
 
 class AntColony3D {
   constructor() {
+    this.loadingScreen = new LoadingScreen({
+      overlay: ui.loadingOverlay,
+      bar: ui.loadingBar,
+      label: ui.loadingLabel,
+      errorPanel: ui.errorPanel,
+      errorMessage: ui.errorMessage,
+    });
+    this.quality = chooseQualityPreset();
+    this.assetService = new AssetService(this.loadingScreen);
+    this.currentPixelRatio = 1;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x181a18);
     this.scene.fog = new THREE.Fog(0x181a18, 96, 190);
     this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 320);
-    this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      powerPreference: "high-performance",
-      preserveDrawingBuffer: true,
-    });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer = this.createRenderer();
+    if (!this.renderer) return;
     ui.world.appendChild(this.renderer.domElement);
 
-    this.clock = new THREE.Clock();
+    this.frameAccumulator = 0;
+    this.lastFrameTime = 0;
+    this.renderTime = 0;
+    this.isRunning = false;
     this.raycaster = new THREE.Raycaster();
     this.ndc = new THREE.Vector2();
     this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -560,18 +823,65 @@ class AntColony3D {
     this.branches = [];
     this.trails = [];
     this.lastUiUpdate = 0;
+    this.resizeWidth = 0;
+    this.resizeHeight = 0;
 
     this.cameraTarget = new THREE.Vector3(this.nest.x * 0.55, 0, this.nest.z * 0.55);
+    this.cameraRenderTarget = this.cameraTarget.clone();
     this.cameraYaw = -0.62;
     this.cameraPitch = 1.05;
+    this.targetCameraYaw = this.cameraYaw;
+    this.targetCameraPitch = this.cameraPitch;
     this.cameraDistance = window.innerWidth < 680 ? 132 : 128;
+    this.targetCameraDistance = this.cameraDistance;
 
+    this.sharedGeometries = new Set();
+    this.sharedMaterials = new Set();
+    this.dynamicObjects = new Set();
+
+    this.assetService.preloadProceduralAssets();
     this.createSharedAssets();
     this.createWorld();
     this.bindEvents();
+    this.debugPanel = new DebugPanel(this);
     this.reset();
     this.resize();
-    this.animate();
+    this.prewarmAndStart();
+  }
+
+  createRenderer() {
+    this.loadingScreen.setProgress("renderer", 0, 1);
+    const probe = document.createElement("canvas");
+    const hasWebGL2 = Boolean(probe.getContext("webgl2"));
+    const hasWebGL = hasWebGL2 || Boolean(probe.getContext("webgl") || probe.getContext("experimental-webgl"));
+    if (!hasWebGL) {
+      this.loadingScreen.showError("この端末では WebGL を開始できません。ブラウザまたはGPU設定を確認してください。");
+      return null;
+    }
+
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: this.quality.antialias,
+        alpha: false,
+        stencil: false,
+        depth: true,
+        powerPreference: "high-performance",
+        preserveDrawingBuffer: false,
+      });
+    } catch (error) {
+      this.loadingScreen.showError(`Renderer init failed: ${error.message}`);
+      return null;
+    }
+
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = this.quality.toneMappingExposure;
+    renderer.shadowMap.enabled = this.quality.shadowQuality !== "off";
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.info.autoReset = true;
+    this.webglTier = hasWebGL2 ? "webgl2" : "webgl1";
+    return renderer;
   }
 
   createSharedAssets() {
@@ -585,7 +895,7 @@ class AntColony3D {
 
     this.materials = {
       ground: new THREE.MeshStandardMaterial({
-        map: makeGroundTexture(),
+        map: this.assetService.get("groundTexture"),
         roughness: 0.92,
         metalness: 0,
       }),
@@ -621,6 +931,12 @@ class AntColony3D {
       stunned: new THREE.MeshStandardMaterial({ color: 0x5b6261, roughness: 0.82 }),
       rescue: new THREE.MeshStandardMaterial({ color: 0x17645a, roughness: 0.7 }),
     };
+
+    for (const geometry of Object.values(this.geometries)) this.sharedGeometries.add(geometry);
+    for (const material of Object.values(this.materials)) {
+      if (material && material.isMaterial) this.sharedMaterials.add(material);
+    }
+    for (const material of Object.values(this.materials.antByState)) this.sharedMaterials.add(material);
   }
 
   createWorld() {
@@ -628,12 +944,26 @@ class AntColony3D {
     this.scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xffedc8, 2.2);
     sun.position.set(-48, 88, 42);
+    sun.castShadow = this.quality.shadowQuality !== "off";
+    if (sun.castShadow) {
+      const mapSize = this.quality.shadowQuality === "medium" ? 1024 : 512;
+      sun.shadow.mapSize.set(mapSize, mapSize);
+      sun.shadow.camera.left = -70;
+      sun.shadow.camera.right = 70;
+      sun.shadow.camera.top = 70;
+      sun.shadow.camera.bottom = -70;
+      sun.shadow.camera.near = 20;
+      sun.shadow.camera.far = 180;
+      sun.shadow.bias = -0.00015;
+    }
     this.scene.add(sun);
 
     const ground = new THREE.Mesh(new THREE.CircleGeometry(this.worldRadius + 12, 144), this.materials.ground);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.03;
+    ground.receiveShadow = this.quality.shadowQuality !== "off";
     this.scene.add(ground);
+    this.sharedGeometries.add(ground.geometry);
 
     const rim = new THREE.Mesh(
       new THREE.TorusGeometry(this.worldRadius + 2, 0.26, 8, 160),
@@ -642,6 +972,8 @@ class AntColony3D {
     rim.rotation.x = Math.PI / 2;
     rim.position.y = 0.02;
     this.scene.add(rim);
+    this.sharedGeometries.add(rim.geometry);
+    this.sharedMaterials.add(rim.material);
 
     this.createNest();
   }
@@ -650,7 +982,10 @@ class AntColony3D {
     const mound = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), this.materials.nest);
     mound.position.set(this.nest.x, 1.25, this.nest.z);
     mound.scale.set(this.nest.radius * 1.15, 2.1, this.nest.radius * 0.82);
+    mound.castShadow = this.quality.shadowQuality !== "off";
+    mound.receiveShadow = this.quality.shadowQuality !== "off";
     this.scene.add(mound);
+    this.sharedGeometries.add(mound.geometry);
 
     for (let i = 0; i < 5; i += 1) {
       const angle = i * 1.25 + 0.4;
@@ -663,11 +998,15 @@ class AntColony3D {
       );
       hole.scale.set(rand(1.0, 1.8), rand(0.55, 0.95), 1);
       this.scene.add(hole);
+      this.sharedGeometries.add(hole.geometry);
     }
   }
 
   bindEvents() {
-    window.addEventListener("resize", () => this.resize());
+    this.boundResize = () => this.resize();
+    this.boundPageHide = () => this.dispose();
+    window.addEventListener("resize", this.boundResize);
+    window.addEventListener("pagehide", this.boundPageHide, { once: true });
 
     ui.buttons.forEach((button) => {
       button.addEventListener("click", () => {
@@ -694,18 +1033,15 @@ class AntColony3D {
     });
 
     const canvas = this.renderer.domElement;
-    canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
-    canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
-    canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
-    canvas.addEventListener("pointercancel", (event) => this.onPointerUp(event));
+    this.input = new InputManager(this, canvas);
   }
 
   reset() {
-    for (const ant of this.ants) this.scene.remove(ant.group);
+    for (const ant of this.ants) ant.destroy(this.scene);
     for (const list of [this.water, this.stones, this.food, this.branches, this.trails]) {
-      for (const item of list) if (item.group) this.scene.remove(item.group);
-      for (const item of list) if (item.mesh) this.scene.remove(item.mesh);
+      for (const item of list) this.disposeDynamicItem(item);
     }
+    this.dynamicObjects.clear();
     this.ants = [];
     this.water = [];
     this.stones = [];
@@ -720,37 +1056,101 @@ class AntColony3D {
     this.updateInspector();
   }
 
+  disposeDynamicItem(item) {
+    if (item.group) {
+      disposeObject3D(item.group, {
+        skipGeometries: this.sharedGeometries,
+        skipMaterials: this.sharedMaterials,
+      });
+      this.dynamicObjects.delete(item.group);
+    }
+    if (item.mesh) {
+      disposeObject3D(item.mesh, {
+        skipGeometries: this.sharedGeometries,
+        skipMaterials: this.sharedMaterials,
+      });
+      this.dynamicObjects.delete(item.mesh);
+    }
+  }
+
   resize() {
     const width = window.innerWidth;
     const height = window.innerHeight;
+    if (width === this.resizeWidth && height === this.resizeHeight) return;
+    this.resizeWidth = width;
+    this.resizeHeight = height;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
-    this.renderer.setSize(width, height);
+    this.currentPixelRatio = Math.min((window.devicePixelRatio || 1) * this.quality.resolutionScale, this.quality.maxPixelRatio);
+    this.renderer.setPixelRatio(this.currentPixelRatio);
+    this.renderer.setSize(width, height, false);
     this.cameraDistance = width < 680 ? 132 : 128;
+    this.targetCameraDistance = this.cameraDistance;
     this.updateCamera();
   }
 
   updateCamera() {
+    this.cameraYaw += (this.targetCameraYaw - this.cameraYaw) * 0.16;
+    this.cameraPitch += (this.targetCameraPitch - this.cameraPitch) * 0.16;
+    this.cameraDistance += (this.targetCameraDistance - this.cameraDistance) * 0.16;
+    this.cameraRenderTarget.lerp(this.cameraTarget, 0.14);
     const horizontal = Math.cos(this.cameraPitch) * this.cameraDistance;
     const y = Math.sin(this.cameraPitch) * this.cameraDistance;
     this.camera.position.set(
-      this.cameraTarget.x + Math.sin(this.cameraYaw) * horizontal,
+      this.cameraRenderTarget.x + Math.sin(this.cameraYaw) * horizontal,
       y,
-      this.cameraTarget.z + Math.cos(this.cameraYaw) * horizontal,
+      this.cameraRenderTarget.z + Math.cos(this.cameraYaw) * horizontal,
     );
-    this.camera.lookAt(this.cameraTarget);
+    this.camera.lookAt(this.cameraRenderTarget);
   }
 
-  animate() {
-    requestAnimationFrame(() => this.animate());
-    const dt = Math.min(this.clock.getDelta(), 0.05);
-    if (!this.paused) this.update(dt);
-    this.renderer.render(this.scene, this.camera);
-    window.__ANT_SIM_READY = true;
+  async prewarmAndStart() {
+    this.loadingScreen.setProgress("compile", 0.75, 1);
+    try {
+      if (typeof this.renderer.compileAsync === "function") {
+        await this.renderer.compileAsync(this.scene, this.camera);
+      } else {
+        this.renderer.compile(this.scene, this.camera);
+      }
+    } catch (error) {
+      this.loadingScreen.showError(`Shader compile failed: ${error.message}`);
+      return;
+    }
+    this.loadingScreen.hide();
+    this.startLoop();
   }
 
-  update(dt) {
+  startLoop() {
+    this.isRunning = true;
+    this.lastFrameTime = 0;
+    this.frameAccumulator = 0;
+    this.renderer.setAnimationLoop((time) => this.tick(time));
+  }
+
+  tick(timeMs) {
+    if (!this.isRunning) return;
+    const time = timeMs / 1000;
+    const frameDelta = this.lastFrameTime === 0 ? FIXED_DT : clamp(time - this.lastFrameTime, 0, MAX_FRAME_DELTA);
+    this.lastFrameTime = time;
+    this.renderTime = timeMs;
+    this.debugPanel.sample(frameDelta);
+
+    if (!this.paused) {
+      this.frameAccumulator += frameDelta;
+      let steps = 0;
+      while (this.frameAccumulator >= FIXED_DT && steps < MAX_FIXED_STEPS) {
+        this.updateGame(FIXED_DT);
+        this.frameAccumulator -= FIXED_DT;
+        steps += 1;
+      }
+      if (steps === MAX_FIXED_STEPS) this.frameAccumulator = 0;
+    }
+
+    const alpha = this.paused ? 1 : clamp(this.frameAccumulator / FIXED_DT, 0, 1);
+    this.renderGame(alpha);
+  }
+
+  updateGame(dt) {
     for (const patch of this.water) {
       patch.age += dt;
       patch.power = Math.max(0.08, patch.power - dt * 0.014);
@@ -760,7 +1160,7 @@ class AntColony3D {
     }
     this.water = this.water.filter((patch) => {
       if (patch.power > 0.09 && patch.age < 85) return true;
-      this.scene.remove(patch.group);
+      this.disposeDynamicItem(patch);
       return false;
     });
 
@@ -780,7 +1180,7 @@ class AntColony3D {
     }
     this.trails = this.trails.filter((trail) => {
       if (trail.life > 0.02) return true;
-      this.scene.remove(trail.mesh);
+      this.disposeDynamicItem(trail);
       return false;
     });
 
@@ -793,6 +1193,33 @@ class AntColony3D {
     }
   }
 
+  renderGame(alpha) {
+    this.updateCamera();
+    for (const ant of this.ants) ant.render(this, alpha);
+    this.renderer.render(this.scene, this.camera);
+    window.__ANT_SIM_READY = true;
+  }
+
+  dispose() {
+    if (!this.renderer) return;
+    this.isRunning = false;
+    this.renderer.setAnimationLoop(null);
+    this.input?.dispose();
+    window.removeEventListener("resize", this.boundResize);
+    window.removeEventListener("pagehide", this.boundPageHide);
+    this.clearBranchPreview();
+    for (const ant of this.ants) ant.destroy(this.scene);
+    for (const list of [this.water, this.stones, this.food, this.branches, this.trails]) {
+      for (const item of list) this.disposeDynamicItem(item);
+    }
+    this.assetService.dispose();
+    for (const geometry of this.sharedGeometries) geometry.dispose();
+    for (const material of this.sharedMaterials) disposeMaterial(material);
+    this.renderer.dispose();
+    this.renderer.domElement.remove();
+    this.renderer = null;
+  }
+
   onPointerDown(event) {
     event.preventDefault();
     this.renderer.domElement.setPointerCapture(event.pointerId);
@@ -802,15 +1229,14 @@ class AntColony3D {
       const points = [...this.pointerMap.values()];
       this.pinchStart = {
         distance: Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y),
-        cameraDistance: this.cameraDistance,
+        cameraDistance: this.targetCameraDistance,
       };
       return;
     }
 
     const point = this.screenToGround(event.clientX, event.clientY);
-    this.pointerStart = { screenX: event.clientX, screenY: event.clientY, ...point };
-
     if (!point) return;
+    this.pointerStart = { screenX: event.clientX, screenY: event.clientY, ...point };
     if (this.tool === "water") this.addWater(point.x, point.z, 1);
     else if (this.tool === "stone") this.addStone(point.x, point.z);
     else if (this.tool === "food") this.addFood(point.x, point.z);
@@ -827,8 +1253,7 @@ class AntColony3D {
     if (this.pointerMap.size === 2 && this.pinchStart) {
       const points = [...this.pointerMap.values()];
       const current = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-      this.cameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 72, 168);
-      this.updateCamera();
+      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 72, 168);
       return;
     }
 
@@ -837,9 +1262,8 @@ class AntColony3D {
     if (Math.abs(dx) + Math.abs(dy) > 2) this.dragMoved = true;
 
     if (this.tool === "inspect") {
-      this.cameraYaw -= dx * 0.006;
-      this.cameraPitch = clamp(this.cameraPitch + dy * 0.004, 0.62, 1.28);
-      this.updateCamera();
+      this.targetCameraYaw -= dx * 0.006;
+      this.targetCameraPitch = clamp(this.targetCameraPitch + dy * 0.004, 0.62, 1.28);
       return;
     }
 
@@ -904,6 +1328,7 @@ class AntColony3D {
     group.add(ring);
     group.position.set(x, 0, z);
     this.scene.add(group);
+    this.dynamicObjects.add(group);
     this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring });
   }
 
@@ -915,6 +1340,8 @@ class AntColony3D {
     stone.position.y = radius * 0.46;
     stone.scale.y = 0.58;
     stone.rotation.set(rand(-0.4, 0.4), rand(0, Math.PI), rand(-0.3, 0.3));
+    stone.castShadow = this.quality.shadowQuality !== "off";
+    stone.receiveShadow = this.quality.shadowQuality !== "off";
     group.add(stone);
     const ring = new THREE.Mesh(this.geometries.impactRing, this.materials.impact.clone());
     ring.rotation.x = Math.PI / 2;
@@ -923,6 +1350,7 @@ class AntColony3D {
     group.add(ring);
     group.position.set(x, 0, z);
     this.scene.add(group);
+    this.dynamicObjects.add(group);
 
     const item = { x, z, radius, shock: 1, group, ring };
     this.stones.push(item);
@@ -943,11 +1371,13 @@ class AntColony3D {
       const r = rand(0, item.radius);
       crumb.position.set(Math.cos(a) * r, 0.52 + rand(0, 0.45), Math.sin(a) * r);
       crumb.scale.setScalar(rand(0.26, 0.58));
+      crumb.castShadow = this.quality.shadowQuality !== "off";
       group.add(crumb);
       item.crumbs.push(crumb);
     }
     group.position.set(x, 0, z);
     this.scene.add(group);
+    this.dynamicObjects.add(group);
     this.food.push(item);
   }
 
@@ -957,7 +1387,7 @@ class AntColony3D {
       crumb.visible = index / food.crumbs.length < ratio;
     });
     if (food.amount <= 0.05) {
-      this.scene.remove(food.group);
+      this.disposeDynamicItem(food);
       this.food = this.food.filter((item) => item !== food);
     }
   }
@@ -972,7 +1402,10 @@ class AntColony3D {
     mesh.position.set((branch.x1 + branch.x2) / 2, width * 0.95, (branch.z1 + branch.z2) / 2);
     const direction = new THREE.Vector3(dx, 0, dz).normalize();
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    mesh.castShadow = this.quality.shadowQuality !== "off";
+    mesh.receiveShadow = this.quality.shadowQuality !== "off";
     this.scene.add(mesh);
+    this.dynamicObjects.add(mesh);
     this.branches.push({ ...branch, width: width * 1.45, group: mesh });
   }
 
@@ -995,7 +1428,7 @@ class AntColony3D {
 
   clearBranchPreview() {
     if (this.branchPreview) {
-      this.scene.remove(this.branchPreview);
+      disposeObject3D(this.branchPreview);
       this.branchPreview = null;
     }
   }
@@ -1005,8 +1438,7 @@ class AntColony3D {
     const removeFrom = (list, predicate) => {
       for (const item of [...list]) {
         if (predicate(item)) {
-          if (item.group) this.scene.remove(item.group);
-          if (item.mesh) this.scene.remove(item.mesh);
+          this.disposeDynamicItem(item);
           const index = list.indexOf(item);
           if (index >= 0) list.splice(index, 1);
         }
@@ -1036,6 +1468,7 @@ class AntColony3D {
     const scale = kind === "alarm" ? 1.3 : 0.85;
     mesh.scale.setScalar(scale);
     this.scene.add(mesh);
+    this.dynamicObjects.add(mesh);
     this.trails.push({
       x,
       z,
@@ -1048,7 +1481,7 @@ class AntColony3D {
     });
     if (this.trails.length > 520) {
       const old = this.trails.shift();
-      this.scene.remove(old.mesh);
+      this.disposeDynamicItem(old);
     }
   }
 

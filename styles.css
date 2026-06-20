@@ -55,6 +55,113 @@ input {
   overflow: hidden;
 }
 
+.loading-overlay,
+.error-panel,
+.debug-panel {
+  position: absolute;
+  z-index: 20;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: 0 18px 42px var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.loading-overlay {
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(19, 21, 19, 0.72);
+}
+
+.loading-overlay.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.loading-box {
+  display: grid;
+  gap: 8px;
+  width: min(280px, calc(100vw - 48px));
+  padding: 16px;
+}
+
+.loading-box strong {
+  font-size: 0.95rem;
+}
+
+.loading-box span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.loading-track {
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.loading-track span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.error-panel {
+  top: max(84px, calc(env(safe-area-inset-top) + 84px));
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  max-width: 520px;
+  padding: 14px;
+}
+
+.error-panel strong,
+.error-panel span {
+  display: block;
+}
+
+.error-panel span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.debug-panel {
+  top: max(130px, calc(env(safe-area-inset-top) + 130px));
+  right: max(12px, env(safe-area-inset-right));
+  width: 220px;
+  padding: 10px;
+  color: #d8fff7;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 0.68rem;
+}
+
+.debug-row {
+  display: grid;
+  grid-template-columns: 1fr 92px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.debug-row select {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.42);
+  color: var(--ink);
+}
+
+.debug-panel pre {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 #world3d canvas {
   display: block;
   width: 100%;

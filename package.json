@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "start": "node ./scripts/serve.mjs",
-    "check": "node --check ./src/simulation.js && node --check ./scripts/serve.mjs && node --check ./scripts/verify-render.mjs",
+    "build": "node ./scripts/build-static.mjs",
+    "asset:audit": "node ./scripts/asset-audit.mjs",
+    "check": "node --check ./src/simulation.js && node --check ./scripts/serve.mjs && node --check ./scripts/verify-render.mjs && node --check ./scripts/build-static.mjs && node --check ./scripts/asset-audit.mjs",
     "verify": "node ./scripts/verify-render.mjs"
   }
 }

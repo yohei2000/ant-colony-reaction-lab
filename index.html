@@ -17,6 +17,33 @@
     <main class="app-shell">
       <div id="world3d" aria-label="蟻の群れの3Dシミュレーション"></div>
 
+      <div id="loadingOverlay" class="loading-overlay" role="status" aria-live="polite">
+        <div class="loading-box">
+          <strong>Loading</strong>
+          <span id="loadingLabel">renderer</span>
+          <div class="loading-track" aria-hidden="true">
+            <span id="loadingBar"></span>
+          </div>
+        </div>
+      </div>
+
+      <div id="errorPanel" class="error-panel" role="alert" hidden>
+        <strong>WebGL error</strong>
+        <span id="errorMessage">This device cannot start the 3D renderer.</span>
+      </div>
+
+      <aside id="debugPanel" class="debug-panel" aria-label="debug metrics" hidden>
+        <div class="debug-row">
+          <span>quality</span>
+          <select id="qualitySelect">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+        <pre id="debugMetrics">waiting</pre>
+      </aside>
+
       <header class="topbar">
         <div class="title-block">
           <span class="title-mark" aria-hidden="true"></span>

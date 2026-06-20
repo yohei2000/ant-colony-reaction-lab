@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { inflateSync } from "node:zlib";
 import { createStaticServer } from "./serve.mjs";
 
 const BROWSER_CANDIDATES = [
@@ -42,6 +43,97 @@ class CdpSession {
   close() {
     this.socket.close();
   }
+}
+
+function decodePng(buffer) {
+  const signature = "89504e470d0a1a0a";
+  if (buffer.subarray(0, 8).toString("hex") !== signature) throw new Error("Invalid PNG signature.");
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let colorType = 0;
+  const idat = [];
+  while (offset < buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    offset += 12 + length;
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      const bitDepth = data[8];
+      colorType = data[9];
+      if (bitDepth !== 8 || (colorType !== 2 && colorType !== 6)) {
+        throw new Error(`Unsupported PNG format: bitDepth=${bitDepth}, colorType=${colorType}`);
+      }
+    } else if (type === "IDAT") {
+      idat.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+  }
+
+  const bytesPerPixel = colorType === 6 ? 4 : 3;
+  const stride = width * bytesPerPixel;
+  const raw = inflateSync(Buffer.concat(idat));
+  const pixels = new Uint8Array(width * height * 4);
+  const previous = new Uint8Array(stride);
+  const current = new Uint8Array(stride);
+  let rawOffset = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[rawOffset];
+    rawOffset += 1;
+    current.set(raw.subarray(rawOffset, rawOffset + stride));
+    rawOffset += stride;
+    for (let x = 0; x < stride; x += 1) {
+      const left = x >= bytesPerPixel ? current[x - bytesPerPixel] : 0;
+      const up = previous[x] ?? 0;
+      const upperLeft = x >= bytesPerPixel ? previous[x - bytesPerPixel] : 0;
+      if (filter === 1) current[x] = (current[x] + left) & 255;
+      else if (filter === 2) current[x] = (current[x] + up) & 255;
+      else if (filter === 3) current[x] = (current[x] + Math.floor((left + up) / 2)) & 255;
+      else if (filter === 4) {
+        const p = left + up - upperLeft;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - up);
+        const pc = Math.abs(p - upperLeft);
+        const predictor = pa <= pb && pa <= pc ? left : pb <= pc ? up : upperLeft;
+        current[x] = (current[x] + predictor) & 255;
+      } else if (filter !== 0) {
+        throw new Error(`Unsupported PNG filter: ${filter}`);
+      }
+    }
+    for (let x = 0; x < width; x += 1) {
+      const source = x * bytesPerPixel;
+      const target = (y * width + x) * 4;
+      pixels[target] = current[source];
+      pixels[target + 1] = current[source + 1];
+      pixels[target + 2] = current[source + 2];
+      pixels[target + 3] = colorType === 6 ? current[source + 3] : 255;
+    }
+    previous.set(current);
+  }
+
+  return { width, height, pixels };
+}
+
+function measurePngRegion(png, region) {
+  let min = 255;
+  let max = 0;
+  let nonDark = 0;
+  let alpha = 0;
+  for (let y = region.y; y < region.y + region.height; y += 1) {
+    for (let x = region.x; x < region.x + region.width; x += 1) {
+      const index = (y * png.width + x) * 4;
+      const luminance = png.pixels[index] * 0.2126 + png.pixels[index + 1] * 0.7152 + png.pixels[index + 2] * 0.0722;
+      min = Math.min(min, luminance);
+      max = Math.max(max, luminance);
+      if (luminance > 24) nonDark += 1;
+      if (png.pixels[index + 3] > 0) alpha += 1;
+    }
+  }
+  return { nonDark, alpha, contrast: max - min };
 }
 
 async function waitForJson(url, timeoutMs = 12000) {
@@ -112,44 +204,45 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
     if (!ready.result.value) throw new Error(`${label}: Three.js scene did not become ready.`);
     await delay(900);
 
-    const probe = await cdp.send("Runtime.evaluate", {
+    const canvasProbe = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const canvas = document.querySelector("#world3d canvas");
-        const sample = document.createElement("canvas");
-        sample.width = 72;
-        sample.height = 72;
-        const context = sample.getContext("2d", { willReadFrequently: true });
-        context.drawImage(canvas, 0, 0, 72, 72);
-        const data = context.getImageData(0, 0, 72, 72).data;
-        let min = 255;
-        let max = 0;
-        let nonDark = 0;
-        let alpha = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          const luminance = data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722;
-          min = Math.min(min, luminance);
-          max = Math.max(max, luminance);
-          if (luminance > 24) nonDark += 1;
-          if (data[i + 3] > 0) alpha += 1;
-        }
+        const rect = canvas.getBoundingClientRect();
         return {
           width: canvas.width,
           height: canvas.height,
-          nonDark,
-          alpha,
-          contrast: max - min,
+          cssWidth: Math.round(rect.width),
+          cssHeight: Math.round(rect.height),
         };
       })()`,
       returnByValue: true,
     });
-    const metrics = probe.result.value;
-    if (metrics.width < width || metrics.height < height || metrics.nonDark < 1800 || metrics.contrast < 18) {
-      throw new Error(`${label}: canvas pixel check failed: ${JSON.stringify(metrics)}`);
-    }
 
     const screenshot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     const screenshotPath = join(outputDir, `${label}.png`);
-    writeFileSync(screenshotPath, Buffer.from(screenshot.data, "base64"));
+    const screenshotBuffer = Buffer.from(screenshot.data, "base64");
+    writeFileSync(screenshotPath, screenshotBuffer);
+    const png = decodePng(screenshotBuffer);
+    const regionSize = Math.min(120, Math.floor(Math.min(png.width, png.height) * 0.28));
+    const metrics = {
+      ...canvasProbe.result.value,
+      ...measurePngRegion(png, {
+        x: Math.floor((png.width - regionSize) / 2),
+        y: Math.floor((png.height - regionSize) / 2),
+        width: regionSize,
+        height: regionSize,
+      }),
+    };
+    if (
+      metrics.cssWidth < width ||
+      metrics.cssHeight < height ||
+      metrics.width < width * 0.5 ||
+      metrics.height < height * 0.5 ||
+      metrics.nonDark < regionSize * regionSize * 0.25 ||
+      metrics.contrast < 14
+    ) {
+      throw new Error(`${label}: screenshot pixel check failed: ${JSON.stringify(metrics)}`);
+    }
     cdp.close();
     return { label, screenshotPath, metrics };
   } finally {

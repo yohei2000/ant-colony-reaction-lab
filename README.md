@@ -14,6 +14,7 @@
 ## ローカル確認
 
 ```powershell
+npm.cmd run build
 npm.cmd run check
 npm.cmd run start
 ```
@@ -23,6 +24,21 @@ npm.cmd run start
 ```powershell
 npm.cmd run verify
 ```
+
+## 品質設定
+
+通常起動では端末幅と pointer 種別から `medium` / `high` を選びます。手動確認は query parameter で行えます。
+
+- `?quality=low`
+- `?quality=medium`
+- `?quality=high`
+- `?debug=1` で renderer.info、frame time、quality selector を表示
+
+設定は `localStorage` の `ant3d.quality` に保存されます。
+
+## アセット
+
+現状は手続き生成のみです。GLB/KTX2 などの追加方針は [docs/asset-pipeline.md](docs/asset-pipeline.md) に記載しています。
 
 ## GitHub Pages
 
