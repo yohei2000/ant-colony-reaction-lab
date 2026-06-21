@@ -301,6 +301,35 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
     ) {
       throw new Error(`${label}: screenshot pixel check failed: ${JSON.stringify(metrics)}`);
     }
+
+    const pheromoneProbe = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const sim = window.__ANT_SIM;
+        sim.addFood(6, 6);
+        const food = sim.food[sim.food.length - 1];
+        sim.addTrail(food.x, food.z, "food", 0.8, {
+          sourceId: food.id,
+          sourceRatio: 1,
+        });
+        const trail = sim.trails[sim.trails.length - 1];
+        const activeBefore = Boolean(sim.getFoodSource(trail.sourceId)) && trail.followStrength > 0;
+        food.amount = 0;
+        sim.refreshFoodMesh(food);
+        sim.updateTrailPheromone(trail, 0.2);
+        return {
+          activeBefore,
+          sourceAfter: Boolean(sim.getFoodSource(trail.sourceId)),
+          followAfter: trail.followStrength,
+          lifeAfter: trail.life,
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const pheromone = pheromoneProbe.result.value;
+    if (!pheromone.activeBefore || pheromone.sourceAfter || pheromone.followAfter !== 0 || pheromone.lifeAfter > 0.18) {
+      throw new Error(`${label}: depleted food pheromone check failed: ${JSON.stringify(pheromone)}`);
+    }
+
     cdp.close();
     return { label, screenshotPath, metrics };
   } finally {

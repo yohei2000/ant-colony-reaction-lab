@@ -117,6 +117,23 @@ const chance = (p) => Math.random() < p;
 const distance2 = (ax, az, bx, bz) => Math.hypot(ax - bx, az - bz);
 const normAngle = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle));
 
+// Food trails model short-lived recruitment signals: successful returners reinforce them,
+// and depleted sources stop reinforcement so the trail quickly evaporates.
+const PHEROMONE_PARAMS = {
+  foodDepositInterval: 0.46,
+  foodBaseStrength: 0.64,
+  foodSourceStrengthBonus: 0.34,
+  foodFollowRadius: 15,
+  foodFollowGain: 0.42,
+  foodActiveDecay: 0.072,
+  foodLowSourceExtraDecay: 0.12,
+  foodDepletedDecay: 0.58,
+  foodLowSourceThreshold: 0.18,
+  alarmDecay: 0.32,
+  rescueDecay: 0.14,
+  waterDecay: 0.14,
+};
+
 function closestPointOnSegment(px, pz, ax, az, bx, bz) {
   const vx = bx - ax;
   const vz = bz - az;
@@ -320,6 +337,7 @@ class Ant3D {
     this.wet = 0;
     this.stun = 0;
     this.carrying = 0;
+    this.foodSourceId = null;
     this.energy = rand(0.55, 1);
     this.lastTrail = rand(0, 1);
     this.homeTimer = rand(0, 8);
@@ -503,6 +521,7 @@ class Ant3D {
   updateExplore(dt, sim, steering, sensed) {
     if (sensed.closestFood && sensed.foodDistance < sensed.closestFood.radius + 1.5 && this.role !== "guard") {
       this.carrying = Math.min(1, sensed.closestFood.amount);
+      this.foodSourceId = sensed.closestFood.id;
       sensed.closestFood.amount -= this.carrying * 0.72;
       sim.refreshFoodMesh(sensed.closestFood);
       this.setState("return");
@@ -510,7 +529,8 @@ class Ant3D {
     }
 
     if (sensed.closestFood && sensed.foodDistance < 45 + this.traits.curiosity * 26) {
-      const strength = (1 - sensed.foodDistance / 75) * (0.85 + this.traits.curiosity);
+      const sourceRatio = clamp(sensed.closestFood.amount / sensed.closestFood.initialAmount, 0, 1);
+      const strength = (1 - sensed.foodDistance / 75) * (0.85 + this.traits.curiosity) * (0.35 + sourceRatio * 0.65);
       steering.x += ((sensed.closestFood.x - this.x) / (sensed.foodDistance || 1)) * strength;
       steering.z += ((sensed.closestFood.z - this.z) / (sensed.foodDistance || 1)) * strength;
     }
@@ -518,8 +538,8 @@ class Ant3D {
     for (const trail of sim.trails) {
       if (trail.kind !== "food") continue;
       const d = distance2(this.x, this.z, trail.x, trail.z);
-      if (d < 18) {
-        const strength = trail.life * (1 - d / 18) * 0.52;
+      if (d < PHEROMONE_PARAMS.foodFollowRadius && trail.followStrength > 0) {
+        const strength = trail.life * trail.followStrength * (1 - d / PHEROMONE_PARAMS.foodFollowRadius) * PHEROMONE_PARAMS.foodFollowGain;
         steering.x += ((trail.x - this.x) / (d || 1)) * strength;
         steering.z += ((trail.z - this.z) / (d || 1)) * strength;
       }
@@ -528,6 +548,7 @@ class Ant3D {
     if (this.homeTimer > 9 + this.traits.persistence * 7 || this.energy < 0.2) {
       this.setState("return");
       this.carrying = 0;
+      this.foodSourceId = null;
       this.homeTimer = 0;
       return;
     }
@@ -551,6 +572,7 @@ class Ant3D {
     if (d < sim.nest.radius * 0.7) {
       if (this.carrying > 0) sim.collectedFood += this.carrying;
       this.carrying = 0;
+      this.foodSourceId = null;
       this.energy = 1;
       this.homeTimer = 0;
       this.setState("explore");
@@ -694,8 +716,16 @@ class Ant3D {
   }
 
   leaveTrail(sim) {
-    if (this.state === "return" && this.carrying > 0 && this.lastTrail > 0.35) {
-      sim.addTrail(this.x, this.z, "food", 0.9);
+    if (this.state === "return" && this.carrying > 0 && this.lastTrail > PHEROMONE_PARAMS.foodDepositInterval) {
+      const source = sim.getFoodSource(this.foodSourceId);
+      if (source) {
+        const sourceRatio = clamp(source.amount / source.initialAmount, 0, 1);
+        const strength = PHEROMONE_PARAMS.foodBaseStrength + sourceRatio * PHEROMONE_PARAMS.foodSourceStrengthBonus;
+        sim.addTrail(this.x, this.z, "food", strength, {
+          sourceId: this.foodSourceId,
+          sourceRatio,
+        });
+      }
       this.lastTrail = 0;
     } else if (this.state === "wet" && this.lastTrail > 0.6) {
       sim.addTrail(this.x, this.z, "water", 0.45);
@@ -939,6 +969,7 @@ class AntColony3D {
     this.nest = { x: -22, z: 7, radius: 12 };
     this.selectedAnt = null;
     this.collectedFood = 0;
+    this.nextFoodId = 1;
     this.ants = [];
     this.water = [];
     this.stones = [];
@@ -1175,6 +1206,7 @@ class AntColony3D {
     this.antRenderer?.beginFrame();
     this.antRenderer?.endFrame();
     this.collectedFood = 0;
+    this.nextFoodId = 1;
     this.selectedAnt = null;
     const count = Number(ui.antCount.value);
     for (let i = 0; i < count; i += 1) this.ants.push(new Ant3D(i + 1, this));
@@ -1300,8 +1332,9 @@ class AntColony3D {
     }
 
     for (const trail of this.trails) {
-      trail.life -= dt * trail.decay;
-      trail.mesh.material.opacity = Math.max(0, trail.life * trail.baseOpacity);
+      this.updateTrailPheromone(trail, dt);
+      const followVisibility = trail.kind === "food" ? trail.followStrength : 1;
+      trail.mesh.material.opacity = Math.max(0, trail.life * trail.baseOpacity * followVisibility);
       trail.mesh.scale.setScalar(trail.scale * (1 + (1 - trail.life) * 0.2));
     }
     this.trails = this.trails.filter((trail) => {
@@ -1317,6 +1350,25 @@ class AntColony3D {
       this.updateInspector();
       this.lastUiUpdate = 0;
     }
+  }
+
+  updateTrailPheromone(trail, dt) {
+    if (trail.kind !== "food") {
+      trail.life -= dt * trail.decay;
+      return;
+    }
+
+    const source = this.getFoodSource(trail.sourceId);
+    if (!source || source.amount <= 0.05) {
+      trail.followStrength = 0;
+      trail.life -= dt * PHEROMONE_PARAMS.foodDepletedDecay;
+      return;
+    }
+
+    const sourceRatio = clamp(source.amount / source.initialAmount, 0, 1);
+    const lowSourceFactor = 1 - clamp(sourceRatio / PHEROMONE_PARAMS.foodLowSourceThreshold, 0, 1);
+    trail.followStrength = clamp(sourceRatio * trail.sourceRatio, 0.08, 1);
+    trail.life -= dt * (PHEROMONE_PARAMS.foodActiveDecay + lowSourceFactor * PHEROMONE_PARAMS.foodLowSourceExtraDecay);
   }
 
   renderGame(alpha) {
@@ -1491,7 +1543,8 @@ class AntColony3D {
     const intensity = Number(ui.intensity.value);
     const amount = 7 + intensity * 4;
     const group = new THREE.Group();
-    const item = { x, z, radius: 4.5 + intensity * 0.7, amount, initialAmount: amount, group, crumbs: [] };
+    const item = { id: this.nextFoodId, x, z, radius: 4.5 + intensity * 0.7, amount, initialAmount: amount, group, crumbs: [] };
+    this.nextFoodId += 1;
     for (let i = 0; i < 18; i += 1) {
       const crumb = new THREE.Mesh(this.geometries.foodCrumb, this.materials.food);
       const a = rand(0, Math.PI * 2);
@@ -1508,14 +1561,29 @@ class AntColony3D {
     this.food.push(item);
   }
 
+  getFoodSource(sourceId) {
+    if (sourceId == null) return null;
+    return this.food.find((item) => item.id === sourceId && item.amount > 0.05) ?? null;
+  }
+
   refreshFoodMesh(food) {
     const ratio = clamp(food.amount / food.initialAmount, 0, 1);
     food.crumbs.forEach((crumb, index) => {
       crumb.visible = index / food.crumbs.length < ratio;
     });
     if (food.amount <= 0.05) {
+      this.fadeFoodTrails(food.id);
       this.disposeDynamicItem(food);
       this.food = this.food.filter((item) => item !== food);
+    }
+  }
+
+  fadeFoodTrails(sourceId) {
+    for (const trail of this.trails) {
+      if (trail.kind !== "food" || trail.sourceId !== sourceId) continue;
+      trail.followStrength = 0;
+      trail.life = Math.min(trail.life, 0.18);
+      trail.decay = PHEROMONE_PARAMS.foodDepletedDecay;
     }
   }
 
@@ -1562,9 +1630,10 @@ class AntColony3D {
 
   eraseAt(x, z) {
     const radius = 7;
-    const removeFrom = (list, predicate) => {
+    const removeFrom = (list, predicate, onRemove = () => {}) => {
       for (const item of [...list]) {
         if (predicate(item)) {
+          onRemove(item);
           this.disposeDynamicItem(item);
           const index = list.indexOf(item);
           if (index >= 0) list.splice(index, 1);
@@ -1573,14 +1642,18 @@ class AntColony3D {
     };
     removeFrom(this.water, (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45);
     removeFrom(this.stones, (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45);
-    removeFrom(this.food, (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45);
+    removeFrom(
+      this.food,
+      (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45,
+      (item) => this.fadeFoodTrails(item.id),
+    );
     removeFrom(this.branches, (item) => {
       const p = closestPointOnSegment(x, z, item.x1, item.z1, item.x2, item.z2);
       return distance2(x, z, p.x, p.z) < radius + item.width;
     });
   }
 
-  addTrail(x, z, kind, strength) {
+  addTrail(x, z, kind, strength, options = {}) {
     const material =
       kind === "food"
         ? this.materials.trailFood.clone()
@@ -1601,7 +1674,17 @@ class AntColony3D {
       z,
       kind,
       life: strength,
-      decay: kind === "food" ? 0.045 : kind === "alarm" ? 0.32 : 0.14,
+      decay:
+        kind === "food"
+          ? PHEROMONE_PARAMS.foodActiveDecay
+          : kind === "alarm"
+            ? PHEROMONE_PARAMS.alarmDecay
+            : kind === "rescue"
+              ? PHEROMONE_PARAMS.rescueDecay
+              : PHEROMONE_PARAMS.waterDecay,
+      sourceId: options.sourceId ?? null,
+      sourceRatio: options.sourceRatio ?? 1,
+      followStrength: kind === "food" ? clamp(options.sourceRatio ?? 1, 0, 1) : 1,
       mesh,
       scale,
       baseOpacity: material.opacity,
