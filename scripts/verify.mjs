@@ -82,6 +82,7 @@ async function runCanvas2DFallbackCheck(browser) {
   await page.goto(BASE_URL, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => Boolean(window.__ANT3D_DEBUG__));
   await page.waitForTimeout(600);
+  await assertNoErrorOverlay(page, 'canvas2d fallback');
 
   const rendererInfo = await page.evaluate(() => window.__ANT3D_DEBUG__.getRendererInfo());
   assert(rendererInfo.rendererMode === 'canvas2d', 'canvas2d fallback: renderer starts without WebGL');
@@ -115,6 +116,7 @@ async function runWebGL1FallbackCheck(browser) {
   await page.goto(BASE_URL, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => Boolean(window.__ANT3D_DEBUG__));
   await page.waitForTimeout(600);
+  await assertNoErrorOverlay(page, 'webgl1 fallback');
 
   const rendererInfo = await page.evaluate(() => window.__ANT3D_DEBUG__.getRendererInfo());
   assert(rendererInfo.isWebGL2 === false, 'webgl1 fallback: renderer runs without WebGL2');
@@ -151,6 +153,7 @@ async function runViewportChecks(browser, config) {
   await page.goto(BASE_URL, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => Boolean(window.__ANT3D_DEBUG__));
   await page.waitForTimeout(600);
+  await assertNoErrorOverlay(page, config.name);
 
   const snapshot = await page.evaluate(() => window.__ANT3D_DEBUG__.getSnapshot());
   assertEqual(snapshot.antPopulation, 12, `${config.name}: initial colony starts with 12 ants`);
@@ -221,6 +224,18 @@ async function runViewportChecks(browser, config) {
   );
   checks.push(`${config.name}: game behavior checks passed`);
   await context.close();
+}
+
+async function assertNoErrorOverlay(page, label) {
+  const visible = await page.evaluate(() => {
+    const error = document.querySelector('#error-screen');
+    if (!error) {
+      return false;
+    }
+    const style = window.getComputedStyle(error);
+    return !error.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+  });
+  assert(!visible, `${label}: WebGL error overlay is not visible`);
 }
 
 async function launchBrowser() {
