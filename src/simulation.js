@@ -1047,6 +1047,7 @@ class AntColony3D {
       waterCircle: new THREE.CircleGeometry(1, 64),
       trailCircle: new THREE.CircleGeometry(1, 18),
       impactRing: new THREE.TorusGeometry(1, 0.035, 8, 72),
+      branchKnob: new THREE.SphereGeometry(1, 8, 6),
     };
 
     this.materials = {
@@ -1062,6 +1063,8 @@ class AntColony3D {
       food: new THREE.MeshStandardMaterial({ color: 0xd9a63f, roughness: 0.62 }),
       stone: new THREE.MeshStandardMaterial({ color: 0x777c75, roughness: 0.86 }),
       branch: new THREE.MeshStandardMaterial({ color: 0x8a6232, roughness: 0.9 }),
+      branchDark: new THREE.MeshStandardMaterial({ color: 0x4e351d, roughness: 0.96 }),
+      branchTip: new THREE.MeshStandardMaterial({ color: 0xb07a3e, roughness: 0.88 }),
       water: new THREE.MeshPhysicalMaterial({
         color: 0x4aa6d9,
         transparent: true,
@@ -1072,6 +1075,8 @@ class AntColony3D {
         depthWrite: false,
       }),
       waterRing: new THREE.MeshBasicMaterial({ color: 0x9ce7ff, transparent: true, opacity: 0.48 }),
+      waterRipple: new THREE.MeshBasicMaterial({ color: 0xc8f6ff, transparent: true, opacity: 0.24, depthWrite: false }),
+      waterHighlight: new THREE.MeshBasicMaterial({ color: 0xf1feff, transparent: true, opacity: 0.32, depthWrite: false }),
       impact: new THREE.MeshBasicMaterial({ color: 0xe47f63, transparent: true, opacity: 0.42 }),
       trailFood: new THREE.MeshBasicMaterial({ color: 0xd9a63f, transparent: true, opacity: 0.2, depthWrite: false }),
       trailAlarm: new THREE.MeshBasicMaterial({ color: 0xd96f58, transparent: true, opacity: 0.24, depthWrite: false }),
@@ -1315,6 +1320,15 @@ class AntColony3D {
       patch.group.scale.setScalar(1 + Math.sin(patch.age * 2.5) * 0.015);
       patch.ring.material.opacity = Math.max(0.1, patch.power * 0.44);
       patch.ring.scale.setScalar(1 + (patch.age % 1) * 0.05);
+      for (const ripple of patch.ripples) {
+        const phase = (patch.age * ripple.speed + ripple.offset) % 1;
+        const scale = ripple.baseScale * (0.82 + phase * 0.34);
+        ripple.mesh.scale.set(scale, scale * ripple.squash, scale);
+        ripple.mesh.material.opacity = patch.power * ripple.opacity * (1 - phase);
+      }
+      for (const highlight of patch.highlights) {
+        highlight.material.opacity = patch.power * highlight.userData.baseOpacity * (0.72 + Math.sin(patch.age * highlight.userData.speed + highlight.userData.offset) * 0.16);
+      }
     }
     this.water = this.water.filter((patch) => {
       if (patch.power > 0.09 && patch.age < 85) return true;
@@ -1499,7 +1513,50 @@ class AntColony3D {
     pool.rotation.x = -Math.PI / 2;
     pool.scale.set(radius * 1.18, radius * 0.82, 1);
     pool.position.y = 0.035;
+    pool.material.opacity = clamp(0.28 + intensity * 0.045, 0.28, 0.52);
     group.add(pool);
+
+    const shore = new THREE.Mesh(this.geometries.waterCircle, this.materials.waterRipple.clone());
+    shore.rotation.x = -Math.PI / 2;
+    shore.scale.set(radius * 1.26, radius * 0.9, 1);
+    shore.position.y = 0.032;
+    shore.material.opacity = 0.13;
+    group.add(shore);
+
+    const highlights = [];
+    const highlightCount = intensity > 3 ? 3 : 2;
+    for (let i = 0; i < highlightCount; i += 1) {
+      const highlight = new THREE.Mesh(this.geometries.waterCircle, this.materials.waterHighlight.clone());
+      highlight.rotation.x = -Math.PI / 2;
+      const a = rand(0, Math.PI * 2);
+      const r = rand(radius * 0.12, radius * 0.42);
+      highlight.position.set(Math.cos(a) * r, 0.052 + i * 0.002, Math.sin(a) * r);
+      highlight.rotation.z = rand(-0.7, 0.7);
+      highlight.scale.set(radius * rand(0.12, 0.24), radius * rand(0.025, 0.055), 1);
+      highlight.userData.baseOpacity = rand(0.18, 0.34);
+      highlight.userData.speed = rand(1.3, 2.4);
+      highlight.userData.offset = rand(0, Math.PI * 2);
+      highlights.push(highlight);
+      group.add(highlight);
+    }
+
+    const ripples = [];
+    const rippleCount = intensity > 4 ? 4 : 3;
+    for (let i = 0; i < rippleCount; i += 1) {
+      const ripple = new THREE.Mesh(this.geometries.impactRing, this.materials.waterRipple.clone());
+      ripple.rotation.x = Math.PI / 2;
+      ripple.position.y = 0.07 + i * 0.002;
+      group.add(ripple);
+      ripples.push({
+        mesh: ripple,
+        baseScale: radius * rand(0.48, 0.92),
+        squash: rand(0.68, 0.86),
+        speed: rand(0.16, 0.34),
+        offset: i / rippleCount,
+        opacity: rand(0.18, 0.34),
+      });
+    }
+
     const ring = new THREE.Mesh(this.geometries.impactRing, this.materials.waterRing.clone());
     ring.rotation.x = Math.PI / 2;
     ring.scale.set(radius * 0.85, radius * 0.85, radius * 0.85);
@@ -1508,7 +1565,7 @@ class AntColony3D {
     group.position.set(x, 0, z);
     this.scene.add(group);
     this.dynamicObjects.add(group);
-    this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring });
+    this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring, ripples, highlights });
   }
 
   addStone(x, z) {
@@ -1592,16 +1649,68 @@ class AntColony3D {
     const dz = branch.z2 - branch.z1;
     const length = Math.hypot(dx, dz);
     const width = 1.35 + Number(ui.intensity.value) * 0.18;
-    const geometry = new THREE.CylinderGeometry(width, width * 0.75, length, 10);
-    const mesh = new THREE.Mesh(geometry, this.materials.branch);
-    mesh.position.set((branch.x1 + branch.x2) / 2, width * 0.95, (branch.z1 + branch.z2) / 2);
     const direction = new THREE.Vector3(dx, 0, dz).normalize();
-    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
-    mesh.castShadow = this.quality.shadowQuality !== "off";
-    mesh.receiveShadow = this.quality.shadowQuality !== "off";
-    this.scene.add(mesh);
-    this.dynamicObjects.add(mesh);
-    this.branches.push({ ...branch, width: width * 1.45, group: mesh });
+    const side = new THREE.Vector3(-direction.z, 0, direction.x);
+    const up = new THREE.Vector3(0, 1, 0);
+    const center = new THREE.Vector3((branch.x1 + branch.x2) / 2, width * 0.95, (branch.z1 + branch.z2) / 2);
+    const group = new THREE.Group();
+
+    const trunkGeometry = new THREE.CylinderGeometry(width * rand(0.9, 1.08), width * rand(0.58, 0.78), length, 12);
+    const trunk = new THREE.Mesh(trunkGeometry, this.materials.branch);
+    trunk.position.copy(center);
+    trunk.quaternion.setFromUnitVectors(up, direction);
+    trunk.rotation.z += rand(-0.08, 0.08);
+    trunk.castShadow = this.quality.shadowQuality !== "off";
+    trunk.receiveShadow = this.quality.shadowQuality !== "off";
+    group.add(trunk);
+
+    for (const offset of [-0.5, 0.5]) {
+      const knob = new THREE.Mesh(this.geometries.branchKnob, this.materials.branchTip);
+      knob.position.copy(center).add(direction.clone().multiplyScalar(length * offset));
+      knob.position.y += width * 0.02;
+      knob.scale.set(width * rand(0.68, 0.92), width * rand(0.42, 0.62), width * rand(0.68, 0.92));
+      knob.castShadow = this.quality.shadowQuality !== "off";
+      group.add(knob);
+    }
+
+    const knotCount = clamp(Math.floor(length / 8), 2, 6);
+    for (let i = 0; i < knotCount; i += 1) {
+      const t = (i + 1) / (knotCount + 1);
+      const knotLength = width * rand(0.2, 0.42);
+      const knotGeometry = new THREE.CylinderGeometry(width * rand(0.82, 1.04), width * rand(0.76, 0.96), knotLength, 10);
+      const knot = new THREE.Mesh(knotGeometry, this.materials.branchDark);
+      knot.position.copy(center).add(direction.clone().multiplyScalar((t - 0.5) * length));
+      knot.position.y += width * 0.012;
+      knot.quaternion.setFromUnitVectors(up, direction);
+      knot.castShadow = this.quality.shadowQuality !== "off";
+      group.add(knot);
+    }
+
+    const twigCount = clamp(Math.floor(length / 13), 1, 4);
+    for (let i = 0; i < twigCount; i += 1) {
+      const t = rand(0.18, 0.84);
+      const sideSign = chance(0.5) ? 1 : -1;
+      const twigLength = width * rand(2.4, 4.6);
+      const twigWidth = width * rand(0.18, 0.32);
+      const twigDirection = direction
+        .clone()
+        .multiplyScalar(rand(-0.18, 0.28))
+        .add(side.clone().multiplyScalar(sideSign * rand(0.64, 0.96)))
+        .normalize();
+      const base = center.clone().add(direction.clone().multiplyScalar((t - 0.5) * length));
+      const twigGeometry = new THREE.CylinderGeometry(twigWidth * 0.8, twigWidth * 1.18, twigLength, 8);
+      const twig = new THREE.Mesh(twigGeometry, this.materials.branch);
+      twig.position.copy(base).add(twigDirection.clone().multiplyScalar(twigLength * 0.48));
+      twig.position.y += width * 0.04;
+      twig.quaternion.setFromUnitVectors(up, twigDirection);
+      twig.castShadow = this.quality.shadowQuality !== "off";
+      twig.receiveShadow = this.quality.shadowQuality !== "off";
+      group.add(twig);
+    }
+
+    this.scene.add(group);
+    this.dynamicObjects.add(group);
+    this.branches.push({ ...branch, width: width * 1.45, group });
   }
 
   updateBranchPreview() {

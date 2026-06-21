@@ -276,6 +276,39 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
       returnByValue: true,
     });
 
+    const toolVisualProbe = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const sim = window.__ANT_SIM;
+        sim.addWater(sim.nest.x + 28, sim.nest.z - 20, 1.1);
+        sim.addBranch({
+          x1: sim.nest.x - 30,
+          z1: sim.nest.z + 16,
+          x2: sim.nest.x + 14,
+          z2: sim.nest.z - 22,
+        });
+        const water = sim.water[sim.water.length - 1];
+        const branch = sim.branches[sim.branches.length - 1];
+        return {
+          waterChildren: water?.group?.children?.length ?? 0,
+          waterRipples: water?.ripples?.length ?? 0,
+          waterHighlights: water?.highlights?.length ?? 0,
+          branchChildren: branch?.group?.children?.length ?? 0,
+          branchWidth: branch?.width ?? 0,
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const toolVisuals = toolVisualProbe.result.value;
+    if (
+      toolVisuals.waterChildren < 7 ||
+      toolVisuals.waterRipples < 3 ||
+      toolVisuals.waterHighlights < 2 ||
+      toolVisuals.branchChildren < 6 ||
+      toolVisuals.branchWidth <= 0
+    ) {
+      throw new Error(`${label}: water/branch visual probe failed: ${JSON.stringify(toolVisuals)}`);
+    }
+
     const screenshot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     const screenshotPath = join(outputDir, `${label}.png`);
     const screenshotBuffer = Buffer.from(screenshot.data, "base64");
