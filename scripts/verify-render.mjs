@@ -302,6 +302,52 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
       throw new Error(`${label}: screenshot pixel check failed: ${JSON.stringify(metrics)}`);
     }
 
+    const expeditionUiProbe = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        document.querySelector('[data-colony-tab="expedition"]')?.click();
+        const viewportWidth = document.documentElement.clientWidth;
+        const selectors = [
+          "#expeditionEnemy",
+          "#expeditionSoldiers",
+          "#expeditionSoldiersValue",
+          "#expeditionTactic",
+          "#battleWinChance",
+          "#battlePower",
+          "#battleEnemyPower",
+          "#battleReward",
+          "#battleLoss",
+          "#battleCooldown",
+          "#expeditionStartBtn",
+        ];
+        const elements = selectors.map((selector) => {
+          const element = document.querySelector(selector);
+          const rect = element?.getBoundingClientRect();
+          return {
+            selector,
+            exists: Boolean(element),
+            left: rect ? Math.round(rect.left) : null,
+            right: rect ? Math.round(rect.right) : null,
+            width: rect ? Math.round(rect.width) : 0,
+          };
+        });
+        const overflowingText = [...document.querySelectorAll("#colonyTab-expedition span, #colonyTab-expedition strong, #colonyTab-expedition button")]
+          .filter((element) => element.scrollWidth > element.clientWidth + 1)
+          .map((element) => element.textContent.trim().slice(0, 28));
+        return {
+          viewportWidth,
+          documentOverflowX: document.documentElement.scrollWidth > viewportWidth + 1,
+          elements,
+          horizontalFit: elements.every((item) => item.exists && item.width > 0 && item.left >= -1 && item.right <= viewportWidth + 1),
+          overflowingText,
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const expeditionUi = expeditionUiProbe.result.value;
+    if (width < 600 && (!expeditionUi.horizontalFit || expeditionUi.documentOverflowX || expeditionUi.overflowingText.length > 0)) {
+      throw new Error(`${label}: expedition UI mobile fit check failed: ${JSON.stringify(expeditionUi)}`);
+    }
+
     const pheromoneProbe = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const sim = window.__ANT_SIM;
@@ -328,6 +374,52 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
     const pheromone = pheromoneProbe.result.value;
     if (!pheromone.activeBefore || pheromone.sourceAfter || pheromone.followAfter !== 0 || pheromone.lifeAfter > 0.18) {
       throw new Error(`${label}: depleted food pheromone check failed: ${JSON.stringify(pheromone)}`);
+    }
+
+    const battleProbe = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const sim = window.__ANT_SIM;
+        sim.colony = sim.normalizeColonyState(null);
+        sim.colony.food = 260;
+        sim.colony.antPopulation = 180;
+        sim.colony.woundedAnts = 0;
+        sim.colony.enemyThreat = 2;
+        sim.colony.battleCooldownUntil = 0;
+        sim.colony.unlockedEnemyColonies = ["weak"];
+        const unlockedInitial = sim.colony.unlockedEnemyColonies.length === 1 && sim.colony.unlockedEnemyColonies[0] === "weak";
+        const available = sim.getAvailableSoldiers();
+        const tooMany = sim.runExpedition("weak", available + 1, "standard", { forcedRoll: 0, ignoreCooldown: true });
+        const foodBeforeWin = sim.colony.food;
+        const territoryBeforeWin = sim.colony.territory;
+        const win = sim.runExpedition("weak", Math.min(12, available), "standard", { forcedRoll: 0, enemyVariance: 1, ignoreCooldown: true });
+        const winOk = win.ok && win.won && sim.colony.food > foodBeforeWin && sim.colony.territory > territoryBeforeWin;
+        const cooldownBlocked = sim.runExpedition("weak", 1, "standard", { forcedRoll: 0 });
+        sim.colony.battleCooldownUntil = 0;
+        const woundedBeforeLoss = sim.colony.woundedAnts;
+        const threatBeforeLoss = sim.colony.enemyThreat;
+        const loss = sim.runExpedition("weak", Math.min(12, sim.getAvailableSoldiers()), "assault", { forcedRoll: 1, enemyVariance: 1, ignoreCooldown: true });
+        const lossOk = loss.ok && !loss.won && sim.colony.woundedAnts > woundedBeforeLoss && sim.colony.enemyThreat > threatBeforeLoss;
+        sim.colony.woundedAnts = 10;
+        const woundedBeforeRecovery = sim.colony.woundedAnts;
+        sim.updateColonyProgress(60);
+        const woundedAfterRecovery = sim.colony.woundedAnts;
+        sim.saveColonyState();
+        const loaded = sim.loadColonyState();
+        return {
+          unlockedInitial,
+          tooManyRejected: !tooMany.ok,
+          winOk,
+          cooldownRejected: !cooldownBlocked.ok,
+          lossOk,
+          recovered: woundedAfterRecovery < woundedBeforeRecovery,
+          persisted: loaded.unlockedEnemyColonies.includes("weak") && loaded.territory === sim.colony.territory && loaded.battleLog.length > 0,
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const battle = battleProbe.result.value;
+    if (!Object.values(battle).every(Boolean)) {
+      throw new Error(`${label}: expedition battle check failed: ${JSON.stringify(battle)}`);
     }
 
     cdp.close();

@@ -81,13 +81,106 @@
         </div>
       </section>
 
+      <section id="colonyPanel" class="colony-panel" aria-label="コロニー管理">
+        <div class="colony-metrics">
+          <div>
+            <span>食料</span>
+            <strong id="colonyFood">0</strong>
+          </div>
+          <div>
+            <span>蟻</span>
+            <strong id="colonyAnts">0</strong>
+          </div>
+          <div>
+            <span>食料/秒</span>
+            <strong id="colonyFoodRate">0</strong>
+          </div>
+          <div>
+            <span>巣Lv</span>
+            <strong id="colonyNestLevel">1</strong>
+          </div>
+        </div>
+
+        <div class="colony-tabs" role="tablist" aria-label="コロニー操作">
+          <button class="colony-tab active" type="button" data-colony-tab="growth">成長</button>
+          <button class="colony-tab" type="button" data-colony-tab="upgrades">強化</button>
+          <button class="colony-tab" type="button" data-colony-tab="expedition">遠征</button>
+        </div>
+
+        <div id="colonyTab-growth" class="colony-tab-panel active">
+          <div class="colony-readout">
+            <span>領土 <strong id="colonyTerritory">0</strong></span>
+            <span>敵脅威 <strong id="colonyThreat">0</strong></span>
+            <span>兵隊 <strong id="colonySoldiers">0</strong></span>
+            <span>負傷 <strong id="colonyWounded">0</strong></span>
+          </div>
+          <button id="nestExpandBtn" class="colony-action" type="button">
+            <strong>巣を拡張</strong>
+            <span id="nestExpandCost">cost 0</span>
+          </button>
+        </div>
+
+        <div id="colonyTab-upgrades" class="colony-tab-panel">
+          <button class="upgrade-button" type="button" data-upgrade="soldierTraining">
+            <strong>Soldier Training</strong>
+            <span></span>
+          </button>
+          <button class="upgrade-button" type="button" data-upgrade="mandibleStrength">
+            <strong>Mandible Strength</strong>
+            <span></span>
+          </button>
+          <button class="upgrade-button" type="button" data-upgrade="nestGuard">
+            <strong>Nest Guard</strong>
+            <span></span>
+          </button>
+          <button class="upgrade-button" type="button" data-upgrade="tacticalPheromone">
+            <strong>Tactical Pheromone</strong>
+            <span></span>
+          </button>
+        </div>
+
+        <div id="colonyTab-expedition" class="colony-tab-panel">
+          <div class="expedition-controls">
+            <label>
+              <span>敵</span>
+              <select id="expeditionEnemy"></select>
+            </label>
+            <label>
+              <span>出撃</span>
+              <input id="expeditionSoldiers" type="range" min="1" max="1" value="1" step="1" />
+              <output id="expeditionSoldiersValue">1</output>
+            </label>
+            <label>
+              <span>戦術</span>
+              <select id="expeditionTactic">
+                <option value="careful">慎重</option>
+                <option value="standard">標準</option>
+                <option value="assault">強襲</option>
+              </select>
+            </label>
+          </div>
+          <div class="battle-summary">
+            <span>勝率 <strong id="battleWinChance">0%</strong></span>
+            <span>自軍 <strong id="battlePower">0</strong></span>
+            <span>敵 <strong id="battleEnemyPower">0</strong></span>
+            <span>報酬 <strong id="battleReward">0</strong></span>
+            <span>損害 <strong id="battleLoss">0</strong></span>
+            <span>待機 <strong id="battleCooldown">ready</strong></span>
+          </div>
+          <button id="expeditionStartBtn" class="colony-action primary" type="button">遠征開始</button>
+          <ol id="battleLog" class="battle-log" aria-label="戦闘ログ"></ol>
+        </div>
+      </section>
+
+      <div id="battleToast" class="battle-toast" role="status" aria-live="polite" hidden></div>
+
       <section class="inspector-panel" aria-label="個体情報">
         <div id="inspector" class="inspector">
           <span class="muted">個体未選択</span>
         </div>
         <div class="control-row">
           <label>
-            <span>群れ</span>
+            <span>表示</span>
             <input id="antCount" type="range" min="80" max="280" value="170" step="10" />
             <output id="antCountValue">170</output>
           </label>

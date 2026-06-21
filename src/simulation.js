@@ -23,6 +23,32 @@ const ui = {
   debugPanel: document.querySelector("#debugPanel"),
   debugMetrics: document.querySelector("#debugMetrics"),
   qualitySelect: document.querySelector("#qualitySelect"),
+  colonyTabs: [...document.querySelectorAll(".colony-tab")],
+  colonyPanels: [...document.querySelectorAll(".colony-tab-panel")],
+  colonyFood: document.querySelector("#colonyFood"),
+  colonyAnts: document.querySelector("#colonyAnts"),
+  colonyFoodRate: document.querySelector("#colonyFoodRate"),
+  colonyNestLevel: document.querySelector("#colonyNestLevel"),
+  colonyTerritory: document.querySelector("#colonyTerritory"),
+  colonyThreat: document.querySelector("#colonyThreat"),
+  colonySoldiers: document.querySelector("#colonySoldiers"),
+  colonyWounded: document.querySelector("#colonyWounded"),
+  nestExpand: document.querySelector("#nestExpandBtn"),
+  nestExpandCost: document.querySelector("#nestExpandCost"),
+  upgradeButtons: [...document.querySelectorAll(".upgrade-button")],
+  expeditionEnemy: document.querySelector("#expeditionEnemy"),
+  expeditionSoldiers: document.querySelector("#expeditionSoldiers"),
+  expeditionSoldiersValue: document.querySelector("#expeditionSoldiersValue"),
+  expeditionTactic: document.querySelector("#expeditionTactic"),
+  battleWinChance: document.querySelector("#battleWinChance"),
+  battlePower: document.querySelector("#battlePower"),
+  battleEnemyPower: document.querySelector("#battleEnemyPower"),
+  battleReward: document.querySelector("#battleReward"),
+  battleLoss: document.querySelector("#battleLoss"),
+  battleCooldown: document.querySelector("#battleCooldown"),
+  expeditionStart: document.querySelector("#expeditionStartBtn"),
+  battleLog: document.querySelector("#battleLog"),
+  battleToast: document.querySelector("#battleToast"),
 };
 
 const FIXED_DT = 1 / 60;
@@ -30,6 +56,9 @@ const MAX_FRAME_DELTA = 0.25;
 const MAX_FIXED_STEPS = 5;
 const DEBUG_QUERY = new URLSearchParams(window.location.search);
 const IS_DEBUG = DEBUG_QUERY.get("debug") === "1";
+const COLONY_STORAGE_KEY = "ant3d.colonyState";
+const COLONY_SAVE_INTERVAL = 5;
+const OFFLINE_CAP_SECONDS = 8 * 60 * 60;
 
 const QUALITY_PRESETS = {
   low: {
@@ -133,6 +162,69 @@ const PHEROMONE_PARAMS = {
   rescueDecay: 0.14,
   waterDecay: 0.14,
 };
+
+const UPGRADE_DEFS = {
+  soldierTraining: { label: "Soldier Training", baseCost: 60, growth: 1.55, effect: "兵隊数と攻撃力を上げる" },
+  mandibleStrength: { label: "Mandible Strength", baseCost: 90, growth: 1.55, effect: "1匹あたりのダメージを上げる" },
+  nestGuard: { label: "Nest Guard", baseCost: 80, growth: 1.55, effect: "防御と兵隊の粘りを上げる" },
+  tacticalPheromone: { label: "Tactical Pheromone", baseCost: 100, growth: 1.55, effect: "指揮効率と採餌を上げる" },
+};
+
+const BATTLE_TACTICS = {
+  careful: { label: "慎重", power: 0.9, reward: 0.85, loss: 0.55 },
+  standard: { label: "標準", power: 1, reward: 1, loss: 1 },
+  assault: { label: "強襲", power: 1.22, reward: 1.25, loss: 1.55 },
+};
+
+const ENEMY_COLONIES = [
+  { id: "weak", name: "弱小コロニー", power: 18, defense: 10, rewardFood: 80, rewardTerritory: 1, cooldown: 45, threatIncrease: 1 },
+  { id: "nearby", name: "近隣コロニー", power: 45, defense: 28, rewardFood: 180, rewardTerritory: 2, cooldown: 75, threatIncrease: 2 },
+  { id: "large", name: "大型コロニー", power: 95, defense: 65, rewardFood: 420, rewardTerritory: 4, cooldown: 120, threatIncrease: 3 },
+  { id: "queen", name: "女王防衛コロニー", power: 180, defense: 140, rewardFood: 1000, rewardTerritory: 8, cooldown: 180, threatIncrease: 4 },
+];
+
+function createDefaultColonyState(now = Date.now()) {
+  return {
+    version: 1,
+    food: 0,
+    lifetimeFood: 0,
+    antPopulation: 170,
+    soldierAnts: 17,
+    attackPower: 1,
+    defensePower: 1,
+    nestLevel: 1,
+    territory: 0,
+    enemyThreat: 2,
+    woundedAnts: 0,
+    battleCooldownUntil: 0,
+    unlockedEnemyColonies: ["weak"],
+    upgrades: {
+      soldierTraining: 0,
+      mandibleStrength: 0,
+      nestGuard: 0,
+      tacticalPheromone: 0,
+    },
+    battleLog: [],
+    lastSavedAt: now,
+  };
+}
+
+function formatNumber(value) {
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  return `${Math.floor(value)}`;
+}
+
+function formatRate(value) {
+  return value < 10 ? value.toFixed(2) : value.toFixed(1);
+}
+
+function formatDuration(seconds) {
+  const remaining = Math.max(0, Math.ceil(seconds));
+  const minutes = Math.floor(remaining / 60);
+  const secs = remaining % 60;
+  return minutes > 0 ? `${minutes}:${String(secs).padStart(2, "0")}` : `${secs}s`;
+}
 
 function closestPointOnSegment(px, pz, ax, az, bx, bz) {
   const vx = bx - ax;
@@ -570,7 +662,7 @@ class Ant3D {
     steering.z += ((sim.nest.z - this.z) / d) * (1.55 + this.traits.persistence);
     this.energy = clamp(this.energy - dt * 0.024, 0, 1);
     if (d < sim.nest.radius * 0.7) {
-      if (this.carrying > 0) sim.collectedFood += this.carrying;
+      if (this.carrying > 0) sim.addColonyFood(this.carrying);
       this.carrying = 0;
       this.foodSourceId = null;
       this.energy = 1;
@@ -938,6 +1030,9 @@ class AntColony3D {
     });
     this.quality = chooseQualityPreset();
     this.assetService = new AssetService(this.loadingScreen);
+    this.colony = this.loadColonyState();
+    this.colonySaveTimer = 0;
+    this.toastTimer = 0;
     this.currentPixelRatio = 1;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x181a18);
@@ -968,7 +1063,7 @@ class AntColony3D {
     this.worldRadius = 82;
     this.nest = { x: -22, z: 7, radius: 12 };
     this.selectedAnt = null;
-    this.collectedFood = 0;
+    this.collectedFood = this.colony.food;
     this.nextFoodId = 1;
     this.ants = [];
     this.water = [];
@@ -1182,10 +1277,28 @@ class AntColony3D {
     ui.reset.addEventListener("click", () => this.reset());
     ui.antCount.addEventListener("input", () => {
       ui.antCountValue.value = ui.antCount.value;
+      this.syncVisibleAnts();
+      this.updateColonyUi();
     });
     ui.antCount.addEventListener("change", () => this.reset());
     ui.intensity.addEventListener("input", () => {
       ui.intensityValue.value = ui.intensity.value;
+    });
+
+    ui.colonyTabs.forEach((button) => {
+      button.addEventListener("click", () => this.setColonyTab(button.dataset.colonyTab));
+    });
+    ui.upgradeButtons.forEach((button) => {
+      button.addEventListener("click", () => this.buyUpgrade(button.dataset.upgrade));
+    });
+    ui.nestExpand.addEventListener("click", () => this.expandNest());
+    ui.expeditionEnemy.addEventListener("change", () => this.updateExpeditionUi());
+    ui.expeditionTactic.addEventListener("change", () => this.updateExpeditionUi());
+    ui.expeditionSoldiers.addEventListener("input", () => this.updateExpeditionUi());
+    ui.expeditionStart.addEventListener("click", () => {
+      const result = this.runExpedition(ui.expeditionEnemy.value, Number(ui.expeditionSoldiers.value), ui.expeditionTactic.value);
+      if (result.ok) this.showBattleToast(result.message);
+      else this.showBattleToast(result.message, "error");
     });
 
     const canvas = this.renderer.domElement;
@@ -1205,12 +1318,13 @@ class AntColony3D {
     this.trails = [];
     this.antRenderer?.beginFrame();
     this.antRenderer?.endFrame();
-    this.collectedFood = 0;
+    this.collectedFood = this.colony.food;
     this.nextFoodId = 1;
     this.selectedAnt = null;
-    const count = Number(ui.antCount.value);
+    const count = this.getVisibleAntTarget();
     for (let i = 0; i < count; i += 1) this.ants.push(new Ant3D(i + 1, this));
     this.updateStats();
+    this.updateColonyUi();
     this.updateInspector();
   }
 
@@ -1309,6 +1423,9 @@ class AntColony3D {
   }
 
   updateGame(dt) {
+    this.updateColonyProgress(dt);
+    this.syncVisibleAnts();
+
     for (const patch of this.water) {
       patch.age += dt;
       patch.power = Math.max(0.08, patch.power - dt * 0.014);
@@ -1344,9 +1461,16 @@ class AntColony3D {
     });
 
     for (const ant of this.ants) ant.update(dt, this);
+    this.updateBattleToast(dt);
+    this.colonySaveTimer += dt;
+    if (this.colonySaveTimer > COLONY_SAVE_INTERVAL) {
+      this.saveColonyState();
+      this.colonySaveTimer = 0;
+    }
     this.lastUiUpdate += dt;
     if (this.lastUiUpdate > 0.15) {
       this.updateStats();
+      this.updateColonyUi();
       this.updateInspector();
       this.lastUiUpdate = 0;
     }
@@ -1371,6 +1495,365 @@ class AntColony3D {
     trail.life -= dt * (PHEROMONE_PARAMS.foodActiveDecay + lowSourceFactor * PHEROMONE_PARAMS.foodLowSourceExtraDecay);
   }
 
+  loadColonyState() {
+    const now = Date.now();
+    const stored = readStorage(COLONY_STORAGE_KEY);
+    let parsed = null;
+    try {
+      parsed = stored ? JSON.parse(stored) : null;
+    } catch {
+      parsed = null;
+    }
+    const state = this.normalizeColonyState(parsed, now);
+    const elapsedSeconds = clamp((now - state.lastSavedAt) / 1000, 0, OFFLINE_CAP_SECONDS);
+    this.applyOfflineColonyProgress(state, elapsedSeconds);
+    state.lastSavedAt = now;
+    return state;
+  }
+
+  normalizeColonyState(raw, now = Date.now()) {
+    const base = createDefaultColonyState(now);
+    const source = raw && typeof raw === "object" ? raw : {};
+    const state = {
+      ...base,
+      ...source,
+      upgrades: { ...base.upgrades, ...(source.upgrades ?? {}) },
+      unlockedEnemyColonies: Array.isArray(source.unlockedEnemyColonies) ? source.unlockedEnemyColonies : base.unlockedEnemyColonies,
+      battleLog: Array.isArray(source.battleLog)
+        ? source.battleLog.slice(0, 5).map((entry) => ({
+          message: String(entry?.message ?? "").slice(0, 120),
+          type: entry?.type === "win" || entry?.type === "loss" ? entry.type : "info",
+          time: String(entry?.time ?? "").slice(0, 8),
+        }))
+        : [],
+    };
+    state.food = Math.max(0, Number(state.food) || 0);
+    state.lifetimeFood = Math.max(state.food, Number(state.lifetimeFood) || 0);
+    state.antPopulation = clamp(Number(state.antPopulation) || base.antPopulation, 1, 100000);
+    state.nestLevel = clamp(Math.floor(Number(state.nestLevel) || 1), 1, 999);
+    state.territory = Math.max(0, Math.floor(Number(state.territory) || 0));
+    state.enemyThreat = clamp(Number(state.enemyThreat) || 0, 0, 100);
+    state.woundedAnts = clamp(Number(state.woundedAnts) || 0, 0, state.antPopulation);
+    state.battleCooldownUntil = Math.max(0, Number(state.battleCooldownUntil) || 0);
+    state.lastSavedAt = Math.max(0, Number(state.lastSavedAt) || now);
+    for (const key of Object.keys(UPGRADE_DEFS)) {
+      state.upgrades[key] = Math.max(0, Math.floor(Number(state.upgrades[key]) || 0));
+    }
+    state.unlockedEnemyColonies = state.unlockedEnemyColonies.filter((id) => ENEMY_COLONIES.some((enemy) => enemy.id === id));
+    if (!state.unlockedEnemyColonies.length) state.unlockedEnemyColonies = ["weak"];
+    return this.refreshColonyDerivedStats(state);
+  }
+
+  applyOfflineColonyProgress(state, seconds) {
+    if (seconds <= 0) return;
+    const foodGain = this.computeFoodPerSecond(state) * seconds;
+    state.food += foodGain;
+    state.lifetimeFood += foodGain;
+    state.enemyThreat = clamp(state.enemyThreat + seconds * 0.0012, 0, 100);
+    state.woundedAnts = Math.max(0, state.woundedAnts - this.computeRecoveryRate(state) * seconds);
+    state.antPopulation = Math.min(this.getPopulationCap(state), state.antPopulation + this.computeGrowthRate(state) * seconds);
+    this.refreshColonyDerivedStats(state);
+  }
+
+  saveColonyState() {
+    this.refreshColonyDerivedStats();
+    this.colony.lastSavedAt = Date.now();
+    writeStorage(COLONY_STORAGE_KEY, JSON.stringify(this.colony));
+  }
+
+  refreshColonyDerivedStats(state = this.colony) {
+    state.soldierAnts = this.getSoldierAnts(state);
+    state.attackPower = this.computeAttackPower(state);
+    state.defensePower = this.computeDefensePower(state);
+    return state;
+  }
+
+  getPopulationCap(state = this.colony) {
+    return 220 + state.nestLevel * 80 + state.territory * 6;
+  }
+
+  getRoleCounts(state = this.colony) {
+    const total = Math.floor(state.antPopulation);
+    const soldierRatio = clamp(0.1 + state.upgrades.soldierTraining * 0.015, 0.1, 0.35);
+    const guard = Math.min(total, Math.floor(total * soldierRatio + state.upgrades.nestGuard * 2));
+    const nurse = Math.min(total - guard, Math.floor(total * 0.18));
+    const scout = Math.min(total - guard - nurse, Math.floor(total * 0.22));
+    const worker = Math.max(0, total - guard - nurse - scout);
+    return { scout, worker, nurse, guard };
+  }
+
+  getSoldierAnts(state = this.colony) {
+    return this.getRoleCounts(state).guard;
+  }
+
+  getAvailableSoldiers(state = this.colony) {
+    return Math.max(0, this.getSoldierAnts(state) - Math.ceil(state.woundedAnts));
+  }
+
+  computeAttackPower(state = this.colony) {
+    return 1 + state.upgrades.soldierTraining * 0.18 + state.upgrades.mandibleStrength * 0.14;
+  }
+
+  computeDefensePower(state = this.colony) {
+    return 1 + state.upgrades.nestGuard * 0.2;
+  }
+
+  computeFoodPerSecond(state = this.colony) {
+    const roles = this.getRoleCounts(state);
+    const activeRatio = clamp((state.antPopulation - state.woundedAnts) / state.antPopulation, 0, 1);
+    const activeWorkers = roles.worker * activeRatio;
+    const territoryMultiplier = 1 + state.territory * 0.04;
+    const threatPenalty = 1 - Math.min(state.enemyThreat * 0.01, 0.25);
+    const pheromoneMultiplier = 1 + state.upgrades.tacticalPheromone * 0.05;
+    return activeWorkers * 0.015 * territoryMultiplier * threatPenalty * pheromoneMultiplier;
+  }
+
+  computeRecoveryRate(state = this.colony) {
+    const nurses = this.getRoleCounts(state).nurse;
+    return nurses * (0.0035 + state.upgrades.nestGuard * 0.0004);
+  }
+
+  computeGrowthRate(state = this.colony) {
+    const foodSupport = 1 + Math.min(state.food / 600, 1) * 0.25;
+    return (0.015 + state.nestLevel * 0.003) * foodSupport;
+  }
+
+  updateColonyProgress(dt) {
+    const foodGain = this.computeFoodPerSecond() * dt;
+    this.addColonyFood(foodGain, { silent: true });
+    this.colony.enemyThreat = clamp(this.colony.enemyThreat + dt * 0.0012, 0, 100);
+    this.colony.woundedAnts = Math.max(0, this.colony.woundedAnts - this.computeRecoveryRate() * dt);
+    this.colony.antPopulation = Math.min(this.getPopulationCap(), this.colony.antPopulation + this.computeGrowthRate() * dt);
+    this.refreshColonyDerivedStats();
+    this.collectedFood = this.colony.food;
+  }
+
+  addColonyFood(amount, { silent = false } = {}) {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    this.colony.food += amount;
+    this.colony.lifetimeFood += amount;
+    this.collectedFood = this.colony.food;
+    if (!silent) {
+      this.saveColonyState();
+      this.updateColonyUi();
+    }
+  }
+
+  spendColonyFood(cost) {
+    if (this.colony.food < cost) return false;
+    this.colony.food -= cost;
+    this.collectedFood = this.colony.food;
+    return true;
+  }
+
+  getVisibleAntTarget() {
+    return Math.min(Math.floor(this.colony.antPopulation), Number(ui.antCount.value), this.antRenderer.capacity);
+  }
+
+  syncVisibleAnts() {
+    const target = this.getVisibleAntTarget();
+    while (this.ants.length < target) this.ants.push(new Ant3D(this.ants.length + 1, this));
+    if (this.ants.length > target) {
+      this.ants.length = target;
+      if (this.selectedAnt && !this.ants.includes(this.selectedAnt)) this.selectedAnt = null;
+    }
+  }
+
+  getUpgradeCost(key) {
+    const upgrade = UPGRADE_DEFS[key];
+    if (!upgrade) return Infinity;
+    return Math.floor(upgrade.baseCost * upgrade.growth ** this.colony.upgrades[key]);
+  }
+
+  buyUpgrade(key) {
+    const cost = this.getUpgradeCost(key);
+    if (!this.spendColonyFood(cost)) {
+      this.showBattleToast("食料が足りません", "error");
+      return false;
+    }
+    this.colony.upgrades[key] += 1;
+    this.saveColonyState();
+    this.updateColonyUi();
+    this.showBattleToast(`${UPGRADE_DEFS[key].label} Lv${this.colony.upgrades[key]}`);
+    return true;
+  }
+
+  getNestExpansionCost() {
+    return Math.floor(120 * 1.75 ** (this.colony.nestLevel - 1));
+  }
+
+  expandNest() {
+    const cost = this.getNestExpansionCost();
+    if (!this.spendColonyFood(cost)) {
+      this.showBattleToast("巣の拡張に必要な食料が足りません", "error");
+      return false;
+    }
+    this.colony.nestLevel += 1;
+    this.nest.radius = 12 + this.colony.nestLevel * 0.8;
+    this.saveColonyState();
+    this.updateColonyUi();
+    this.showBattleToast(`巣Lv ${this.colony.nestLevel}`);
+    return true;
+  }
+
+  getEnemy(enemyId) {
+    return ENEMY_COLONIES.find((enemy) => enemy.id === enemyId) ?? ENEMY_COLONIES[0];
+  }
+
+  getTactic(tacticId) {
+    return BATTLE_TACTICS[tacticId] ?? BATTLE_TACTICS.standard;
+  }
+
+  getBattleEstimate(enemyId, soldierCount, tacticId) {
+    const enemy = this.getEnemy(enemyId);
+    const tactic = this.getTactic(tacticId);
+    const assigned = Math.max(0, Math.floor(Number(soldierCount) || 0));
+    const commandMultiplier = 1 + this.colony.upgrades.tacticalPheromone * 0.06;
+    const defensePower = this.computeDefensePower();
+    const lossMitigation = 1 / defensePower;
+    const playerPower = assigned * this.computeAttackPower() * tactic.power * commandMultiplier;
+    const enemyPower = enemy.power + enemy.defense * 0.35 + this.colony.enemyThreat * 1.2;
+    const winChance = clamp(playerPower / ((playerPower + enemyPower) || 1), 0.08, 0.92);
+    const pressure = enemyPower / ((playerPower + enemyPower) || 1);
+    const rewardFood = Math.floor(enemy.rewardFood * tactic.reward * (1 + this.colony.territory * 0.02));
+    const rewardTerritory = enemy.rewardTerritory;
+    const woundsOnWin = Math.ceil(assigned * 0.04 * tactic.loss * (0.65 + pressure) * lossMitigation);
+    const woundsOnLoss = Math.ceil(assigned * clamp(0.18 * tactic.loss + pressure * 0.25, 0.12, 0.55) * lossMitigation);
+    const expectedWounds = Math.round(woundsOnWin * winChance + woundsOnLoss * (1 - winChance));
+    const foodLoss = Math.min(this.colony.food, Math.floor(enemy.rewardFood * 0.35 * tactic.loss * lossMitigation));
+    return { enemy, tactic, assigned, playerPower, enemyPower, defensePower, winChance, rewardFood, rewardTerritory, woundsOnWin, woundsOnLoss, expectedWounds, foodLoss };
+  }
+
+  runExpedition(enemyId, soldierCount, tacticId, options = {}) {
+    const now = Date.now();
+    const enemy = this.getEnemy(enemyId);
+    if (!this.colony.unlockedEnemyColonies.includes(enemy.id)) return { ok: false, message: "未解放の敵です" };
+    if (!options.ignoreCooldown && this.colony.battleCooldownUntil > now) return { ok: false, message: "遠征隊の再編成中です" };
+    const assigned = Math.floor(Number(soldierCount) || 0);
+    const available = this.getAvailableSoldiers();
+    if (assigned < 1) return { ok: false, message: "出撃する兵隊が必要です" };
+    if (assigned > available) return { ok: false, message: "出撃数が兵隊数を超えています" };
+
+    const estimate = this.getBattleEstimate(enemy.id, assigned, tacticId);
+    const roll = options.forcedRoll ?? Math.random();
+    const enemyVariance = options.enemyVariance ?? rand(0.88, 1.14);
+    const adjustedChance = clamp(estimate.playerPower / ((estimate.playerPower + estimate.enemyPower * enemyVariance) || 1), 0.08, 0.92);
+    const won = roll < adjustedChance;
+    this.colony.battleCooldownUntil = now + enemy.cooldown * 1000;
+
+    if (won) {
+      this.addColonyFood(estimate.rewardFood, { silent: true });
+      this.colony.territory += estimate.rewardTerritory;
+      this.colony.enemyThreat = Math.max(0, this.colony.enemyThreat - (2 + estimate.rewardTerritory));
+      this.colony.woundedAnts = clamp(this.colony.woundedAnts + estimate.woundsOnWin, 0, this.colony.antPopulation);
+      this.unlockNextEnemy(enemy.id);
+      const message = `遠征成功 +${estimate.rewardFood} food / 領土 +${estimate.rewardTerritory}`;
+      this.addBattleLog(message, "win");
+      this.saveColonyState();
+      this.updateColonyUi();
+      return { ok: true, won: true, message, estimate };
+    }
+
+    this.colony.food = Math.max(0, this.colony.food - estimate.foodLoss);
+    this.collectedFood = this.colony.food;
+    this.colony.woundedAnts = clamp(this.colony.woundedAnts + estimate.woundsOnLoss, 0, this.colony.antPopulation);
+    this.colony.enemyThreat = clamp(this.colony.enemyThreat + enemy.threatIncrease, 0, 100);
+    const message = `敗北 ${estimate.woundsOnLoss}匹負傷 / -${estimate.foodLoss} food`;
+    this.addBattleLog(message, "loss");
+    this.saveColonyState();
+    this.updateColonyUi();
+    return { ok: true, won: false, message, estimate };
+  }
+
+  unlockNextEnemy(enemyId) {
+    const index = ENEMY_COLONIES.findIndex((enemy) => enemy.id === enemyId);
+    const next = ENEMY_COLONIES[index + 1];
+    if (next && !this.colony.unlockedEnemyColonies.includes(next.id)) this.colony.unlockedEnemyColonies.push(next.id);
+  }
+
+  addBattleLog(message, type) {
+    const time = new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+    this.colony.battleLog.unshift({ message, type, time });
+    this.colony.battleLog = this.colony.battleLog.slice(0, 5);
+  }
+
+  setColonyTab(tab) {
+    ui.colonyTabs.forEach((button) => button.classList.toggle("active", button.dataset.colonyTab === tab));
+    ui.colonyPanels.forEach((panel) => panel.classList.toggle("active", panel.id === `colonyTab-${tab}`));
+  }
+
+  updateEnemyOptions() {
+    const unlocked = ENEMY_COLONIES.filter((enemy) => this.colony.unlockedEnemyColonies.includes(enemy.id));
+    const ids = unlocked.map((enemy) => enemy.id).join(",");
+    if (ui.expeditionEnemy.dataset.ids !== ids) {
+      const current = ui.expeditionEnemy.value;
+      ui.expeditionEnemy.innerHTML = unlocked.map((enemy) => `<option value="${enemy.id}">${enemy.name}</option>`).join("");
+      ui.expeditionEnemy.dataset.ids = ids;
+      ui.expeditionEnemy.value = unlocked.some((enemy) => enemy.id === current) ? current : unlocked[0]?.id;
+    }
+  }
+
+  updateColonyUi() {
+    this.updateEnemyOptions();
+    const roles = this.getRoleCounts();
+    ui.colonyFood.textContent = formatNumber(this.colony.food);
+    ui.colonyAnts.textContent = `${Math.floor(this.colony.antPopulation)}/${this.getPopulationCap()}`;
+    ui.colonyFoodRate.textContent = formatRate(this.computeFoodPerSecond());
+    ui.colonyNestLevel.textContent = this.colony.nestLevel;
+    ui.colonyTerritory.textContent = this.colony.territory;
+    ui.colonyThreat.textContent = Math.floor(this.colony.enemyThreat);
+    ui.colonySoldiers.textContent = `${this.getAvailableSoldiers()}/${this.getSoldierAnts()}`;
+    ui.colonyWounded.textContent = Math.ceil(this.colony.woundedAnts);
+    const nestCost = this.getNestExpansionCost();
+    ui.nestExpand.disabled = this.colony.food < nestCost;
+    ui.nestExpandCost.textContent = `cost ${formatNumber(nestCost)} / cap ${this.getPopulationCap()}`;
+    for (const button of ui.upgradeButtons) {
+      const key = button.dataset.upgrade;
+      const level = this.colony.upgrades[key];
+      const cost = this.getUpgradeCost(key);
+      button.disabled = this.colony.food < cost;
+      button.querySelector("span").textContent = `Lv${level} / cost ${formatNumber(cost)} / ${UPGRADE_DEFS[key].effect}`;
+    }
+    ui.battleLog.replaceChildren(...this.colony.battleLog.map((entry) => {
+      const item = document.createElement("li");
+      item.className = entry.type;
+      item.textContent = `${entry.time} ${entry.message}`;
+      return item;
+    }));
+    this.updateExpeditionUi(roles);
+  }
+
+  updateExpeditionUi() {
+    const available = this.getAvailableSoldiers();
+    ui.expeditionSoldiers.min = available > 0 ? "1" : "0";
+    ui.expeditionSoldiers.max = `${Math.max(available, 0)}`;
+    ui.expeditionSoldiers.value = `${clamp(Number(ui.expeditionSoldiers.value) || 0, available > 0 ? 1 : 0, Math.max(available, 0))}`;
+    ui.expeditionSoldiersValue.textContent = ui.expeditionSoldiers.value;
+
+    const estimate = this.getBattleEstimate(ui.expeditionEnemy.value, Number(ui.expeditionSoldiers.value), ui.expeditionTactic.value);
+    const cooldown = Math.max(0, (this.colony.battleCooldownUntil - Date.now()) / 1000);
+    ui.battleWinChance.textContent = `${Math.round(estimate.winChance * 100)}%`;
+    ui.battlePower.textContent = Math.round(estimate.playerPower);
+    ui.battleEnemyPower.textContent = Math.round(estimate.enemyPower);
+    ui.battleReward.textContent = `${formatNumber(estimate.rewardFood)} / +${estimate.rewardTerritory}`;
+    ui.battleLoss.textContent = `${estimate.expectedWounds}匹`;
+    ui.battleCooldown.textContent = cooldown > 0 ? formatDuration(cooldown) : "ready";
+    ui.expeditionStart.disabled = available < 1 || cooldown > 0;
+  }
+
+  showBattleToast(message, type = "ok") {
+    ui.battleToast.textContent = message;
+    ui.battleToast.dataset.type = type;
+    ui.battleToast.hidden = false;
+    this.toastTimer = 2.8;
+  }
+
+  updateBattleToast(dt) {
+    if (this.toastTimer <= 0) return;
+    this.toastTimer -= dt;
+    if (this.toastTimer <= 0) ui.battleToast.hidden = true;
+  }
+
   renderGame(alpha) {
     this.updateCamera();
     this.antRenderer.render(this.ants, this, alpha);
@@ -1385,6 +1868,7 @@ class AntColony3D {
     this.input?.dispose();
     window.removeEventListener("resize", this.boundResize);
     window.removeEventListener("pagehide", this.boundPageHide);
+    this.saveColonyState();
     this.clearBranchPreview();
     this.antRenderer?.destroy();
     for (const list of [this.water, this.stones, this.food, this.branches, this.trails]) {
