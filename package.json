@@ -1,0 +1,22 @@
+{
+  "name": "ant-colony-reaction-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "check": "tsc --noEmit",
+    "build": "vite build",
+    "asset:audit": "node scripts/asset-audit.mjs",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "@types/three": "^0.184.1",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.6"
+  }
+}
