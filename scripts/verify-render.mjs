@@ -348,6 +348,54 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
       throw new Error(`${label}: expedition UI mobile fit check failed: ${JSON.stringify(expeditionUi)}`);
     }
 
+    const idleProbe = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const sim = window.__ANT_SIM;
+        const fresh = sim.normalizeColonyState(null);
+        const legacy = sim.normalizeColonyState({
+          version: 1,
+          food: 0,
+          lifetimeFood: 0,
+          antPopulation: 170,
+          nestLevel: 1,
+          upgrades: {},
+        });
+        const startFoodRate = sim.computeFoodPerSecond(fresh);
+        const startGrowthRate = sim.computeGrowthRate(fresh);
+        const foragingState = sim.normalizeColonyState(null);
+        const foragingBefore = sim.computeFoodPerSecond(foragingState);
+        foragingState.upgrades.foragerTrails = 1;
+        const foragingAfter = sim.computeFoodPerSecond(foragingState);
+        const nurseryState = sim.normalizeColonyState(null);
+        const growthBefore = sim.computeGrowthRate(nurseryState);
+        nurseryState.upgrades.broodNursery = 1;
+        const growthAfter = sim.computeGrowthRate(nurseryState);
+        const capState = sim.normalizeColonyState(null);
+        const capBefore = sim.getPopulationCap(capState);
+        capState.upgrades.storageChambers = 1;
+        const capAfter = sim.getPopulationCap(capState);
+        const offlineState = sim.normalizeColonyState(null);
+        const antsBeforeOffline = offlineState.antPopulation;
+        sim.applyOfflineColonyProgress(offlineState, 600);
+        return {
+          actualSmallStart: sim.ants.length <= 16,
+          defaultSmall: fresh.antPopulation <= 16 && fresh.food <= 12,
+          legacyMigratedSmall: legacy.antPopulation <= 18,
+          hasEarlyFood: startFoodRate > 0,
+          hasEarlyGrowth: startGrowthRate > 0,
+          foragingImproves: foragingAfter > foragingBefore,
+          nurseryImproves: growthAfter > growthBefore,
+          storageRaisesCap: capAfter > capBefore,
+          offlineGrows: offlineState.antPopulation > antsBeforeOffline,
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const idle = idleProbe.result.value;
+    if (!Object.values(idle).every(Boolean)) {
+      throw new Error(`${label}: idle colony progression check failed: ${JSON.stringify(idle)}`);
+    }
+
     const pheromoneProbe = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const sim = window.__ANT_SIM;
@@ -381,11 +429,14 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
         const sim = window.__ANT_SIM;
         sim.colony = sim.normalizeColonyState(null);
         sim.colony.food = 260;
-        sim.colony.antPopulation = 180;
+        sim.colony.antPopulation = 80;
+        sim.colony.nestLevel = 3;
+        sim.colony.upgrades.storageChambers = 3;
         sim.colony.woundedAnts = 0;
         sim.colony.enemyThreat = 2;
         sim.colony.battleCooldownUntil = 0;
         sim.colony.unlockedEnemyColonies = ["weak"];
+        sim.refreshColonyDerivedStats();
         const unlockedInitial = sim.colony.unlockedEnemyColonies.length === 1 && sim.colony.unlockedEnemyColonies[0] === "weak";
         const available = sim.getAvailableSoldiers();
         const tooMany = sim.runExpedition("weak", available + 1, "standard", { forcedRoll: 0, ignoreCooldown: true });

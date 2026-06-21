@@ -468,6 +468,11 @@ input {
   cursor: not-allowed;
 }
 
+.upgrade-button.locked {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.16);
+}
+
 .expedition-controls {
   display: grid;
   gap: 7px;
@@ -786,7 +791,7 @@ input {
 
   .colony-panel {
     top: max(122px, calc(env(safe-area-inset-top) + 122px));
-    max-height: 42dvh;
+    max-height: 46dvh;
   }
 
   .colony-metrics,

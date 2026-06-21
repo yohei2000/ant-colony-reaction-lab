@@ -113,6 +113,8 @@
             <span>敵脅威 <strong id="colonyThreat">0</strong></span>
             <span>兵隊 <strong id="colonySoldiers">0</strong></span>
             <span>負傷 <strong id="colonyWounded">0</strong></span>
+            <span>働き蟻 <strong id="colonyWorkers">0</strong></span>
+            <span>増加/分 <strong id="colonyGrowthRate">0</strong></span>
           </div>
           <button id="nestExpandBtn" class="colony-action" type="button">
             <strong>巣を拡張</strong>
@@ -121,6 +123,22 @@
         </div>
 
         <div id="colonyTab-upgrades" class="colony-tab-panel">
+          <button class="upgrade-button" type="button" data-upgrade="foragerTrails">
+            <strong>Forager Trails</strong>
+            <span></span>
+          </button>
+          <button class="upgrade-button" type="button" data-upgrade="broodNursery">
+            <strong>Brood Nursery</strong>
+            <span></span>
+          </button>
+          <button class="upgrade-button" type="button" data-upgrade="storageChambers">
+            <strong>Storage Chambers</strong>
+            <span></span>
+          </button>
+          <button class="upgrade-button" type="button" data-upgrade="queenCare">
+            <strong>Queen Care</strong>
+            <span></span>
+          </button>
           <button class="upgrade-button" type="button" data-upgrade="soldierTraining">
             <strong>Soldier Training</strong>
             <span></span>
@@ -181,8 +199,8 @@
         <div class="control-row">
           <label>
             <span>表示</span>
-            <input id="antCount" type="range" min="80" max="280" value="170" step="10" />
-            <output id="antCountValue">170</output>
+            <input id="antCount" type="range" min="10" max="320" value="140" step="10" />
+            <output id="antCountValue">140</output>
           </label>
           <label>
             <span>刺激</span>

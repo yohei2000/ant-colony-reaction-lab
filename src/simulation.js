@@ -33,6 +33,8 @@ const ui = {
   colonyThreat: document.querySelector("#colonyThreat"),
   colonySoldiers: document.querySelector("#colonySoldiers"),
   colonyWounded: document.querySelector("#colonyWounded"),
+  colonyWorkers: document.querySelector("#colonyWorkers"),
+  colonyGrowthRate: document.querySelector("#colonyGrowthRate"),
   nestExpand: document.querySelector("#nestExpandBtn"),
   nestExpandCost: document.querySelector("#nestExpandCost"),
   upgradeButtons: [...document.querySelectorAll(".upgrade-button")],
@@ -57,6 +59,7 @@ const MAX_FIXED_STEPS = 5;
 const DEBUG_QUERY = new URLSearchParams(window.location.search);
 const IS_DEBUG = DEBUG_QUERY.get("debug") === "1";
 const COLONY_STORAGE_KEY = "ant3d.colonyState";
+const CURRENT_COLONY_VERSION = 2;
 const COLONY_SAVE_INTERVAL = 5;
 const OFFLINE_CAP_SECONDS = 8 * 60 * 60;
 
@@ -164,10 +167,62 @@ const PHEROMONE_PARAMS = {
 };
 
 const UPGRADE_DEFS = {
-  soldierTraining: { label: "Soldier Training", baseCost: 60, growth: 1.55, effect: "兵隊数と攻撃力を上げる" },
-  mandibleStrength: { label: "Mandible Strength", baseCost: 90, growth: 1.55, effect: "1匹あたりのダメージを上げる" },
-  nestGuard: { label: "Nest Guard", baseCost: 80, growth: 1.55, effect: "防御と兵隊の粘りを上げる" },
-  tacticalPheromone: { label: "Tactical Pheromone", baseCost: 100, growth: 1.55, effect: "指揮効率と採餌を上げる" },
+  foragerTrails: {
+    label: "Forager Trails",
+    baseCost: 24,
+    growth: 1.42,
+    effect: "採餌効率 +18%",
+    requirement: {},
+  },
+  broodNursery: {
+    label: "Brood Nursery",
+    baseCost: 36,
+    growth: 1.48,
+    effect: "孵化速度 +22%",
+    requirement: { minAnts: 12 },
+  },
+  storageChambers: {
+    label: "Storage Chambers",
+    baseCost: 52,
+    growth: 1.52,
+    effect: "収容上限 +20",
+    requirement: { minAnts: 16 },
+  },
+  queenCare: {
+    label: "Queen Care",
+    baseCost: 78,
+    growth: 1.58,
+    effect: "産卵基礎力 +16%",
+    requirement: { minAnts: 20, minLifetimeFood: 80 },
+  },
+  soldierTraining: {
+    label: "Soldier Training",
+    baseCost: 120,
+    growth: 1.58,
+    effect: "兵隊比率と攻撃力を上げる",
+    requirement: { minAnts: 28 },
+  },
+  mandibleStrength: {
+    label: "Mandible Strength",
+    baseCost: 160,
+    growth: 1.58,
+    effect: "兵隊1匹あたりのダメージを上げる",
+    requirement: { minAnts: 34, minTerritory: 1 },
+  },
+  nestGuard: {
+    label: "Nest Guard",
+    baseCost: 140,
+    growth: 1.56,
+    effect: "防御と負傷回復を上げる",
+    requirement: { minAnts: 30 },
+  },
+  tacticalPheromone: {
+    label: "Tactical Pheromone",
+    baseCost: 180,
+    growth: 1.6,
+    effect: "指揮効率と採餌を上げる",
+    requirement: { minLifetimeFood: 240 },
+  },
 };
 
 const BATTLE_TACTICS = {
@@ -185,20 +240,24 @@ const ENEMY_COLONIES = [
 
 function createDefaultColonyState(now = Date.now()) {
   return {
-    version: 1,
-    food: 0,
-    lifetimeFood: 0,
-    antPopulation: 170,
-    soldierAnts: 17,
+    version: CURRENT_COLONY_VERSION,
+    food: 8,
+    lifetimeFood: 8,
+    antPopulation: 12,
+    soldierAnts: 1,
     attackPower: 1,
     defensePower: 1,
     nestLevel: 1,
     territory: 0,
-    enemyThreat: 2,
+    enemyThreat: 1,
     woundedAnts: 0,
     battleCooldownUntil: 0,
     unlockedEnemyColonies: ["weak"],
     upgrades: {
+      foragerTrails: 0,
+      broodNursery: 0,
+      storageChambers: 0,
+      queenCare: 0,
       soldierTraining: 0,
       mandibleStrength: 0,
       nestGuard: 0,
@@ -1280,7 +1339,6 @@ class AntColony3D {
       this.syncVisibleAnts();
       this.updateColonyUi();
     });
-    ui.antCount.addEventListener("change", () => this.reset());
     ui.intensity.addEventListener("input", () => {
       ui.intensityValue.value = ui.intensity.value;
     });
@@ -1514,13 +1572,14 @@ class AntColony3D {
   normalizeColonyState(raw, now = Date.now()) {
     const base = createDefaultColonyState(now);
     const source = raw && typeof raw === "object" ? raw : {};
+    const migratedSource = this.migrateColonyState(source, base);
     const state = {
       ...base,
-      ...source,
-      upgrades: { ...base.upgrades, ...(source.upgrades ?? {}) },
-      unlockedEnemyColonies: Array.isArray(source.unlockedEnemyColonies) ? source.unlockedEnemyColonies : base.unlockedEnemyColonies,
-      battleLog: Array.isArray(source.battleLog)
-        ? source.battleLog.slice(0, 5).map((entry) => ({
+      ...migratedSource,
+      upgrades: { ...base.upgrades, ...(migratedSource.upgrades ?? {}) },
+      unlockedEnemyColonies: Array.isArray(migratedSource.unlockedEnemyColonies) ? migratedSource.unlockedEnemyColonies : base.unlockedEnemyColonies,
+      battleLog: Array.isArray(migratedSource.battleLog)
+        ? migratedSource.battleLog.slice(0, 5).map((entry) => ({
           message: String(entry?.message ?? "").slice(0, 120),
           type: entry?.type === "win" || entry?.type === "loss" ? entry.type : "info",
           time: String(entry?.time ?? "").slice(0, 8),
@@ -1539,9 +1598,38 @@ class AntColony3D {
     for (const key of Object.keys(UPGRADE_DEFS)) {
       state.upgrades[key] = Math.max(0, Math.floor(Number(state.upgrades[key]) || 0));
     }
+    state.version = CURRENT_COLONY_VERSION;
+    state.antPopulation = clamp(state.antPopulation, 1, this.getPopulationCap(state));
+    state.woundedAnts = clamp(state.woundedAnts, 0, state.antPopulation);
     state.unlockedEnemyColonies = state.unlockedEnemyColonies.filter((id) => ENEMY_COLONIES.some((enemy) => enemy.id === id));
     if (!state.unlockedEnemyColonies.length) state.unlockedEnemyColonies = ["weak"];
     return this.refreshColonyDerivedStats(state);
+  }
+
+  migrateColonyState(source, base) {
+    if (!source || typeof source !== "object") return source;
+    const version = Number(source.version) || 1;
+    if (version >= CURRENT_COLONY_VERSION) return source;
+
+    const legacyFood = Math.max(0, Number(source.food) || 0);
+    const legacyLifetimeFood = Math.max(legacyFood, Number(source.lifetimeFood) || 0);
+    const progressAntBonus = Math.min(18, Math.floor(legacyLifetimeFood / 120));
+    const preservedNestLevel = clamp(Math.floor(Number(source.nestLevel) || 1), 1, 2);
+    return {
+      ...source,
+      version: CURRENT_COLONY_VERSION,
+      food: Math.max(base.food, Math.min(legacyFood, 140)),
+      lifetimeFood: Math.max(base.lifetimeFood, Math.min(legacyLifetimeFood, 320)),
+      antPopulation: base.antPopulation + progressAntBonus + (preservedNestLevel - 1) * 6,
+      nestLevel: preservedNestLevel,
+      enemyThreat: Math.min(Number(source.enemyThreat) || base.enemyThreat, 8),
+      woundedAnts: 0,
+      battleCooldownUntil: 0,
+      upgrades: {
+        ...base.upgrades,
+        ...(source.upgrades ?? {}),
+      },
+    };
   }
 
   applyOfflineColonyProgress(state, seconds) {
@@ -1569,15 +1657,18 @@ class AntColony3D {
   }
 
   getPopulationCap(state = this.colony) {
-    return 220 + state.nestLevel * 80 + state.territory * 6;
+    return 24 + state.nestLevel * 18 + state.upgrades.storageChambers * 20 + state.upgrades.queenCare * 6 + state.territory * 6;
   }
 
   getRoleCounts(state = this.colony) {
     const total = Math.floor(state.antPopulation);
-    const soldierRatio = clamp(0.1 + state.upgrades.soldierTraining * 0.015, 0.1, 0.35);
-    const guard = Math.min(total, Math.floor(total * soldierRatio + state.upgrades.nestGuard * 2));
-    const nurse = Math.min(total - guard, Math.floor(total * 0.18));
-    const scout = Math.min(total - guard - nurse, Math.floor(total * 0.22));
+    const soldierRatio = clamp(0.07 + state.upgrades.soldierTraining * 0.018 + state.upgrades.nestGuard * 0.006, 0.07, 0.34);
+    const guardBase = Math.floor(total * soldierRatio + state.upgrades.nestGuard * 1.5);
+    const guard = Math.min(total, Math.max(total >= 10 ? 1 : 0, guardBase));
+    const nurseRatio = clamp(0.16 + state.upgrades.broodNursery * 0.01 + state.upgrades.queenCare * 0.008, 0.16, 0.3);
+    const scoutRatio = clamp(0.18 + state.upgrades.foragerTrails * 0.006, 0.18, 0.28);
+    const nurse = Math.min(total - guard, Math.floor(total * nurseRatio));
+    const scout = Math.min(total - guard - nurse, Math.floor(total * scoutRatio));
     const worker = Math.max(0, total - guard - nurse - scout);
     return { scout, worker, nurse, guard };
   }
@@ -1602,20 +1693,29 @@ class AntColony3D {
     const roles = this.getRoleCounts(state);
     const activeRatio = clamp((state.antPopulation - state.woundedAnts) / state.antPopulation, 0, 1);
     const activeWorkers = roles.worker * activeRatio;
+    const activeScouts = roles.scout * activeRatio;
     const territoryMultiplier = 1 + state.territory * 0.04;
     const threatPenalty = 1 - Math.min(state.enemyThreat * 0.01, 0.25);
-    const pheromoneMultiplier = 1 + state.upgrades.tacticalPheromone * 0.05;
-    return activeWorkers * 0.015 * territoryMultiplier * threatPenalty * pheromoneMultiplier;
+    const foragerMultiplier = 1 + state.upgrades.foragerTrails * 0.18 + state.upgrades.tacticalPheromone * 0.05;
+    const storageMultiplier = 1 + state.upgrades.storageChambers * 0.025;
+    return (activeWorkers * 0.018 + activeScouts * 0.006) * territoryMultiplier * threatPenalty * foragerMultiplier * storageMultiplier;
   }
 
   computeRecoveryRate(state = this.colony) {
     const nurses = this.getRoleCounts(state).nurse;
-    return nurses * (0.0035 + state.upgrades.nestGuard * 0.0004);
+    return nurses * (0.0035 + state.upgrades.broodNursery * 0.0005 + state.upgrades.nestGuard * 0.0004);
   }
 
   computeGrowthRate(state = this.colony) {
-    const foodSupport = 1 + Math.min(state.food / 600, 1) * 0.25;
-    return (0.015 + state.nestLevel * 0.003) * foodSupport;
+    const roles = this.getRoleCounts(state);
+    const cap = this.getPopulationCap(state);
+    const openSpaceRatio = clamp((cap - state.antPopulation) / Math.max(1, cap), 0, 1);
+    if (openSpaceRatio <= 0) return 0;
+    const foodSupport = clamp(0.55 + state.food / 90, 0.55, 1.45);
+    const nurseryMultiplier = 1 + state.upgrades.broodNursery * 0.22 + state.upgrades.queenCare * 0.16;
+    const baseEggRate = 0.006 + state.nestLevel * 0.002 + state.upgrades.queenCare * 0.0018;
+    const nurseCare = roles.nurse * (0.0018 + state.upgrades.broodNursery * 0.00035);
+    return (baseEggRate + nurseCare) * foodSupport * nurseryMultiplier * clamp(openSpaceRatio * 1.7, 0.12, 1);
   }
 
   updateColonyProgress(dt) {
@@ -1665,7 +1765,31 @@ class AntColony3D {
     return Math.floor(upgrade.baseCost * upgrade.growth ** this.colony.upgrades[key]);
   }
 
+  isUpgradeUnlocked(key, state = this.colony) {
+    const requirement = UPGRADE_DEFS[key]?.requirement ?? {};
+    if (requirement.minAnts && Math.floor(state.antPopulation) < requirement.minAnts) return false;
+    if (requirement.minNestLevel && state.nestLevel < requirement.minNestLevel) return false;
+    if (requirement.minTerritory && state.territory < requirement.minTerritory) return false;
+    if (requirement.minLifetimeFood && state.lifetimeFood < requirement.minLifetimeFood) return false;
+    return true;
+  }
+
+  getUpgradeRequirementText(key, state = this.colony) {
+    const requirement = UPGRADE_DEFS[key]?.requirement ?? {};
+    const missing = [];
+    if (requirement.minAnts && Math.floor(state.antPopulation) < requirement.minAnts) missing.push(`蟻 ${Math.floor(state.antPopulation)}/${requirement.minAnts}`);
+    if (requirement.minNestLevel && state.nestLevel < requirement.minNestLevel) missing.push(`巣Lv ${state.nestLevel}/${requirement.minNestLevel}`);
+    if (requirement.minTerritory && state.territory < requirement.minTerritory) missing.push(`領土 ${state.territory}/${requirement.minTerritory}`);
+    if (requirement.minLifetimeFood && state.lifetimeFood < requirement.minLifetimeFood) missing.push(`累計食料 ${formatNumber(state.lifetimeFood)}/${formatNumber(requirement.minLifetimeFood)}`);
+    return missing.join(" / ");
+  }
+
   buyUpgrade(key) {
+    if (!UPGRADE_DEFS[key]) return false;
+    if (!this.isUpgradeUnlocked(key)) {
+      this.showBattleToast(`条件未達: ${this.getUpgradeRequirementText(key)}`, "error");
+      return false;
+    }
     const cost = this.getUpgradeCost(key);
     if (!this.spendColonyFood(cost)) {
       this.showBattleToast("食料が足りません", "error");
@@ -1679,7 +1803,7 @@ class AntColony3D {
   }
 
   getNestExpansionCost() {
-    return Math.floor(120 * 1.75 ** (this.colony.nestLevel - 1));
+    return Math.floor(70 * 1.62 ** (this.colony.nestLevel - 1));
   }
 
   expandNest() {
@@ -1804,6 +1928,8 @@ class AntColony3D {
     ui.colonyThreat.textContent = Math.floor(this.colony.enemyThreat);
     ui.colonySoldiers.textContent = `${this.getAvailableSoldiers()}/${this.getSoldierAnts()}`;
     ui.colonyWounded.textContent = Math.ceil(this.colony.woundedAnts);
+    ui.colonyWorkers.textContent = roles.worker;
+    ui.colonyGrowthRate.textContent = formatRate(this.computeGrowthRate() * 60);
     const nestCost = this.getNestExpansionCost();
     ui.nestExpand.disabled = this.colony.food < nestCost;
     ui.nestExpandCost.textContent = `cost ${formatNumber(nestCost)} / cap ${this.getPopulationCap()}`;
@@ -1811,8 +1937,12 @@ class AntColony3D {
       const key = button.dataset.upgrade;
       const level = this.colony.upgrades[key];
       const cost = this.getUpgradeCost(key);
-      button.disabled = this.colony.food < cost;
-      button.querySelector("span").textContent = `Lv${level} / cost ${formatNumber(cost)} / ${UPGRADE_DEFS[key].effect}`;
+      const unlocked = this.isUpgradeUnlocked(key);
+      button.classList.toggle("locked", !unlocked);
+      button.disabled = !unlocked || this.colony.food < cost;
+      button.querySelector("span").textContent = unlocked
+        ? `Lv${level} / cost ${formatNumber(cost)} / ${UPGRADE_DEFS[key].effect}`
+        : `ロック: ${this.getUpgradeRequirementText(key)}`;
     }
     ui.battleLog.replaceChildren(...this.colony.battleLog.map((entry) => {
       const item = document.createElement("li");
