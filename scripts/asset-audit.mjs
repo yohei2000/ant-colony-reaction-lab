@@ -1,52 +1,38 @@
-import { readdir, stat } from 'node:fs/promises';
-import { join, extname } from 'node:path';
+import { readdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { extname, join } from "node:path";
 
-const ROOTS = ['src', 'public', 'dist'];
-const ASSET_EXTENSIONS = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.webp',
-  '.gif',
-  '.svg',
-  '.glb',
-  '.gltf',
-  '.mp3',
-  '.ogg',
-  '.wav'
-]);
-const MAX_ASSET_BYTES = 512 * 1024;
+const ASSET_EXTENSIONS = new Set([".glb", ".gltf", ".fbx", ".obj", ".png", ".jpg", ".jpeg", ".hdr", ".ktx2", ".webp"]);
+const roots = ["assets", "public", "src"];
+const assets = [];
 
-const findings = [];
-
-for (const root of ROOTS) {
-  await scan(root).catch(() => undefined);
-}
-
-if (findings.length > 0) {
-  console.error('Asset audit failed:');
-  for (const finding of findings) {
-    console.error(`- ${finding.path}: ${Math.round(finding.size / 1024)} KiB`);
-  }
-  process.exit(1);
-}
-
-console.log('Asset audit passed: no oversized raster/model/audio assets found.');
-
-async function scan(dir) {
-  const entries = await readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
+async function walk(root) {
+  if (!existsSync(root)) return;
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
     if (entry.isDirectory()) {
-      await scan(path);
+      await walk(path);
       continue;
     }
-    if (!ASSET_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-      continue;
-    }
+    const extension = extname(entry.name).toLowerCase();
+    if (!ASSET_EXTENSIONS.has(extension)) continue;
     const info = await stat(path);
-    if (info.size > MAX_ASSET_BYTES) {
-      findings.push({ path, size: info.size });
-    }
+    assets.push({ path, extension, bytes: info.size });
   }
 }
+
+for (const root of roots) await walk(root);
+
+const totalBytes = assets.reduce((sum, asset) => sum + asset.bytes, 0);
+const report = {
+  count: assets.length,
+  totalBytes,
+  assets,
+  notes: [
+    "No binary runtime assets are required today; the scene is procedural.",
+    "When GLB assets are introduced, prefer Meshopt first, Draco only for bandwidth-heavy static meshes.",
+    "When color textures are introduced, convert large color maps to KTX2/BasisU and keep normal/roughness/metalness linear.",
+  ],
+};
+
+console.log(JSON.stringify(report, null, 2));

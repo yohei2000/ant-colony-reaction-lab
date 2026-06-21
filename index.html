@@ -1,51 +1,132 @@
 <!doctype html>
 <html lang="ja">
   <head>
-    <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
-    />
-    <meta name="theme-color" content="#182018" />
-    <link rel="icon" href="data:," />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>蟻の群れリアクションラボ 3D</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js"
+        }
+      }
+    </script>
   </head>
   <body>
-    <div id="loading-screen" class="loading-screen">
-      <div class="loading-card">
-        <div class="loading-title">蟻の群れリアクションラボ 3D</div>
-        <div id="loading-progress" class="loading-progress">0%</div>
-        <div class="loading-bar"><span id="loading-bar-fill"></span></div>
-      </div>
-    </div>
-    <div id="error-screen" class="error-screen" hidden>
-      <div class="error-card">
-        <h1>WebGL が必要です</h1>
-        <p>
-          このゲームは Three.js の WebGL 描画を使用します。ブラウザまたは端末の
-          WebGL 設定、ハードウェアアクセラレーション、低電力モードを確認してください。
-        </p>
-      </div>
-    </div>
-    <canvas id="game-canvas" aria-label="3D ant colony field"></canvas>
-    <div id="app-ui" data-ui>
-      <header class="top-panel" data-ui>
-        <div class="brand">
-          <span class="brand-mark"></span>
-          <span>蟻の群れリアクションラボ 3D</span>
+    <main class="app-shell">
+      <div id="world3d" aria-label="蟻の群れの3Dシミュレーション"></div>
+
+      <div id="loadingOverlay" class="loading-overlay" role="status" aria-live="polite">
+        <div class="loading-box">
+          <strong>Loading</strong>
+          <span id="loadingLabel">renderer</span>
+          <div class="loading-track" aria-hidden="true">
+            <span id="loadingBar"></span>
+          </div>
         </div>
-        <div id="stats-grid" class="stats-grid"></div>
+      </div>
+
+      <div id="errorPanel" class="error-panel" role="alert" hidden>
+        <strong>WebGL error</strong>
+        <span id="errorMessage">This device cannot start the 3D renderer.</span>
+      </div>
+
+      <aside id="debugPanel" class="debug-panel" aria-label="debug metrics" hidden>
+        <div class="debug-row">
+          <span>quality</span>
+          <select id="qualitySelect">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+        <pre id="debugMetrics">waiting</pre>
+      </aside>
+
+      <header class="topbar">
+        <div class="title-block">
+          <span class="title-mark" aria-hidden="true"></span>
+          <div>
+            <strong>蟻の群れリアクションラボ 3D</strong>
+            <small id="activeToolLabel">観察</small>
+          </div>
+        </div>
+        <div class="quick-actions">
+          <button id="pauseBtn" class="icon-button" type="button" title="一時停止" aria-label="一時停止">
+            <span class="pause-icon" aria-hidden="true"></span>
+          </button>
+          <button id="resetBtn" class="icon-button" type="button" title="再生成" aria-label="再生成">
+            <span class="reset-icon" aria-hidden="true"></span>
+          </button>
+        </div>
       </header>
-      <main class="colony-panel" data-ui>
-        <div class="tab-row" role="tablist" aria-label="Colony tabs">
-          <button class="tab-button is-active" data-tab="growth" type="button">成長</button>
-          <button class="tab-button" data-tab="upgrade" type="button">強化</button>
-          <button class="tab-button" data-tab="expedition" type="button">遠征</button>
+
+      <section class="stats-strip" aria-label="群れの状態">
+        <div>
+          <span>探索</span>
+          <strong id="statExplore">0</strong>
         </div>
-        <section id="tab-content" class="tab-content"></section>
-      </main>
-      <nav id="tool-bar" class="tool-bar" aria-label="tools" data-ui></nav>
-    </div>
-    <script type="module" src="/src/main.ts"></script>
+        <div>
+          <span>避難</span>
+          <strong id="statAlert">0</strong>
+        </div>
+        <div>
+          <span>救助</span>
+          <strong id="statRescue">0</strong>
+        </div>
+        <div>
+          <span>搬入</span>
+          <strong id="statFood">0</strong>
+        </div>
+      </section>
+
+      <section class="inspector-panel" aria-label="個体情報">
+        <div id="inspector" class="inspector">
+          <span class="muted">個体未選択</span>
+        </div>
+        <div class="control-row">
+          <label>
+            <span>群れ</span>
+            <input id="antCount" type="range" min="80" max="280" value="170" step="10" />
+            <output id="antCountValue">170</output>
+          </label>
+          <label>
+            <span>刺激</span>
+            <input id="intensity" type="range" min="1" max="5" value="3" step="1" />
+            <output id="intensityValue">3</output>
+          </label>
+        </div>
+      </section>
+
+      <nav class="toolbelt" aria-label="操作ツール">
+        <button class="tool-button active" type="button" data-tool="inspect" data-label="観察" title="観察" aria-label="観察">
+          <span class="tool-icon inspect-icon" aria-hidden="true"></span>
+          <span>観察</span>
+        </button>
+        <button class="tool-button" type="button" data-tool="water" data-label="水" title="水" aria-label="水">
+          <span class="tool-icon water-icon" aria-hidden="true"></span>
+          <span>水</span>
+        </button>
+        <button class="tool-button" type="button" data-tool="stone" data-label="落下物" title="落下物" aria-label="落下物">
+          <span class="tool-icon stone-icon" aria-hidden="true"></span>
+          <span>物</span>
+        </button>
+        <button class="tool-button" type="button" data-tool="food" data-label="餌" title="餌" aria-label="餌">
+          <span class="tool-icon food-icon" aria-hidden="true"></span>
+          <span>餌</span>
+        </button>
+        <button class="tool-button" type="button" data-tool="branch" data-label="枝" title="枝" aria-label="枝">
+          <span class="tool-icon branch-icon" aria-hidden="true"></span>
+          <span>枝</span>
+        </button>
+        <button class="tool-button" type="button" data-tool="erase" data-label="消去" title="消去" aria-label="消去">
+          <span class="tool-icon eraser-icon" aria-hidden="true"></span>
+          <span>消す</span>
+        </button>
+      </nav>
+    </main>
+
+    <script type="module" src="./src/simulation.js"></script>
   </body>
 </html>

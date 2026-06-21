@@ -1,33 +1,45 @@
 # 蟻の群れリアクションラボ 3D
 
-Three.js + Vite + TypeScript で作った、モバイル前提の 3D アリコロニー観察シミュレータです。
+スマホ操作を前提にした Three.js 製の 3D 蟻シミュレータです。水、落下物、餌、枝をフィールドに置き、個体ごとの性格と状態遷移を観察できます。
 
-小さな巣と 12 匹のアリから始まり、水・物・餌・枝への反応、フェロモン、放置成長、アップグレード、敵コロニー遠征バトルを 1 つの軽量な Web ゲームとして動かします。
+## 操作
 
-## 開発
+- 観察: 1本指ドラッグでカメラ回転、タップで個体選択、2本指でズーム
+- 水: タップまたはドラッグで水たまりを作成
+- 物: タップで落下物を投下
+- 餌: タップで餌を配置
+- 枝: ドラッグで障害物を配置
+- 消す: タップまたはドラッグで配置物を削除
+
+## ローカル確認
 
 ```powershell
-npm.cmd install
-npm.cmd run dev
+npm.cmd run build
+npm.cmd run check
+npm.cmd run start
 ```
 
-## 検証
+検証スクリプトは headless Chrome または Edge を使い、デスクトップとスマホ幅でスクリーンショットと WebGL canvas の非空ピクセル確認を行います。
 
 ```powershell
-npm.cmd run check
-npm.cmd run build
-npm.cmd run asset:audit
 npm.cmd run verify
 ```
 
-`npm run verify` は Vite dev server を起動し、Playwright で `390x844` と `1366x768` を確認します。canvas の非空チェック、`renderer.info`、初期 12 匹、hover だけではカメラが動かないこと、フェロモン減衰、放置成長、アップグレード、遠征、保存復元、モバイル横はみ出しを検証します。
+## 品質設定
+
+通常起動では端末幅と pointer 種別から `medium` / `high` を選びます。手動確認は query parameter で行えます。
+
+- `?quality=low`
+- `?quality=medium`
+- `?quality=high`
+- `?debug=1` で renderer.info、frame time、quality selector を表示
+
+設定は `localStorage` の `ant3d.quality` に保存されます。
+
+## アセット
+
+現状は手続き生成のみです。GLB/KTX2 などの追加方針は [docs/asset-pipeline.md](docs/asset-pipeline.md) に記載しています。
 
 ## GitHub Pages
 
-Vite の `base` は `/ant-colony-reaction-lab/` に設定済みです。GitHub Actions で Pages に配信できます。
-
-公開 URL:
-
-```text
-https://yohei2000.github.io/ant-colony-reaction-lab/
-```
+`.github/workflows/deploy.yml` で GitHub Pages に配信します。リポジトリの Pages は `GitHub Actions` 配信モードに設定済みです。
