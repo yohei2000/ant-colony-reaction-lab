@@ -147,19 +147,12 @@ function makeGroundTexture() {
   canvas.width = 768;
   canvas.height = 768;
   const context = canvas.getContext("2d");
-  context.fillStyle = "#a9824b";
+  const gradient = context.createLinearGradient(0, 0, 768, 768);
+  gradient.addColorStop(0, "#c9aa67");
+  gradient.addColorStop(0.48, "#a9824b");
+  gradient.addColorStop(1, "#77603d");
+  context.fillStyle = gradient;
   context.fillRect(0, 0, 768, 768);
-
-  for (let i = 0; i < 80; i += 1) {
-    const x = Math.random() * 768;
-    const y = Math.random() * 768;
-    const rx = rand(24, 92);
-    const ry = rand(16, 74);
-    context.fillStyle = Math.random() > 0.52 ? "rgba(68,50,28,0.08)" : "rgba(221,187,111,0.07)";
-    context.beginPath();
-    context.ellipse(x, y, rx, ry, rand(0, Math.PI), 0, Math.PI * 2);
-    context.fill();
-  }
 
   for (let i = 0; i < 3400; i += 1) {
     const x = Math.random() * 768;
@@ -174,7 +167,7 @@ function makeGroundTexture() {
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(4, 4);
+  texture.repeat.set(5, 5);
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
@@ -320,8 +313,7 @@ class DebugPanel {
       `geometries ${info.memory.geometries}`,
       `textures ${info.memory.textures}`,
       `ants ${this.sim.ants.length}`,
-      `objects ${this.sim.water.length + this.sim.stones.length + this.sim.food.length + this.sim.branches.length + this.sim.predators.length}`,
-      `terrain ${this.sim.terrain.length}`,
+      `objects ${this.sim.water.length + this.sim.stones.length + this.sim.food.length + this.sim.branches.length}`,
     ].join("\n");
     this.elapsed = 0;
     this.frames = 0;
@@ -338,7 +330,7 @@ class Ant3D {
     this.z = sim.nest.z + Math.sin(angle) * spread;
     this.angle = rand(0, Math.PI * 2);
     this.turnBias = rand(-0.4, 0.4);
-    this.baseSpeed = rand(7.2, 12.8);
+    this.baseSpeed = rand(8.5, 15.5);
     this.state = "explore";
     this.stateTime = 0;
     this.wander = rand(0, Math.PI * 2);
@@ -501,18 +493,6 @@ class Ant3D {
         const strength = 1 - d / reach;
         hazard.x += ((this.x - p.x) / (d || 1)) * strength * 1.3;
         hazard.z += ((this.z - p.z) / (d || 1)) * strength * 1.3;
-      }
-    }
-
-    for (const predator of sim.predators) {
-      const d = distance2(this.x, this.z, predator.x, predator.z);
-      const reach = predator.radius + 16 + predator.threat * 10;
-      if (d < reach) {
-        const strength = (1 - d / reach) * predator.threat;
-        hazard.x += ((this.x - predator.x) / (d || 1)) * strength * 2.1;
-        hazard.z += ((this.z - predator.z) / (d || 1)) * strength * 2.1;
-        sensed.alarm = Math.max(sensed.alarm, strength);
-        if (d < predator.radius + 1.2 && chance(0.004 * predator.threat)) this.shock(strength);
       }
     }
 
@@ -698,17 +678,6 @@ class Ant3D {
         steering.z += nz;
       }
     }
-    for (const predator of sim.predators) {
-      const d = distance2(this.x, this.z, predator.x, predator.z);
-      if (d < predator.radius + 1.3) {
-        const nx = (this.x - predator.x) / (d || 1);
-        const nz = (this.z - predator.z) / (d || 1);
-        this.x = predator.x + nx * (predator.radius + 1.3);
-        this.z = predator.z + nz * (predator.radius + 1.3);
-        steering.x += nx * 1.5;
-        steering.z += nz * 1.5;
-      }
-    }
   }
 
   move(dt, sim, steering) {
@@ -728,7 +697,6 @@ class Ant3D {
     if (this.state === "wet") speed *= 0.56;
     if (this.carrying > 0) speed *= 0.75;
     speed *= clamp(1 - this.wet * 0.3, 0.34, 1);
-    speed *= sim.terrainSpeedAt(this.x, this.z);
     speed *= sim.timeScale;
 
     this.x += Math.sin(this.angle) * speed * dt;
@@ -779,15 +747,13 @@ class Ant3D {
       x: this.prevX + (this.x - this.prevX) * alpha,
       z: this.prevZ + (this.z - this.prevZ) * alpha,
       angle: this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha,
-      y: 0.2 + Math.sin(sim.renderTime * 0.006 + this.id) * 0.012,
+      y: 0.72 + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03,
       scale: this.state === "stunned" ? 0.82 : 1,
       state: this.state,
       carrying: this.carrying,
     };
   }
 }
-
-const ANT_VISUAL_SCALE = 0.46;
 
 const ANT_BODY_PARTS = [
   { name: "gaster", x: 0, y: 0, z: -1.78, sx: 0.48, sy: 0.29, sz: 0.72 },
@@ -885,7 +851,7 @@ class AntRenderSystem {
     }
 
     if (renderState.carrying > 0) {
-      this.composeLocalMatrix(renderState, 0, 0.14, 1.9, 0.36, 0.36, 0.36);
+      this.composeLocalMatrix(renderState, 0, 0.14, 1.9, 0.72, 0.72, 0.72);
       this.foodMesh.setMatrixAt(this.foodCount, this.dummy.matrix);
       this.foodCount += 1;
     }
@@ -894,17 +860,13 @@ class AntRenderSystem {
   composeLocalMatrix(renderState, localX, localY, localZ, scaleX, scaleY, scaleZ) {
     const sin = Math.sin(renderState.angle);
     const cos = Math.cos(renderState.angle);
-    const visualScale = renderState.scale * ANT_VISUAL_SCALE;
-    const x = localX * visualScale;
-    const y = localY * visualScale;
-    const z = localZ * visualScale;
     this.dummy.position.set(
-      renderState.x + x * cos + z * sin,
-      renderState.y + y,
-      renderState.z - x * sin + z * cos,
+      renderState.x + localX * cos + localZ * sin,
+      renderState.y + localY * renderState.scale,
+      renderState.z - localX * sin + localZ * cos,
     );
     this.dummy.rotation.set(0, renderState.angle, 0);
-    this.dummy.scale.set(scaleX * visualScale, scaleY * visualScale, scaleZ * visualScale);
+    this.dummy.scale.set(scaleX * renderState.scale, scaleY * renderState.scale, scaleZ * renderState.scale);
     this.dummy.updateMatrix();
   }
 
@@ -918,18 +880,16 @@ class AntRenderSystem {
     this.segmentQuaternion.setFromUnitVectors(this.up, this.segmentDirection);
     this.dummy.position.copy(this.segmentMid);
     this.dummy.quaternion.copy(this.segmentQuaternion);
-    const radius = segment.radius * renderState.scale * ANT_VISUAL_SCALE;
-    this.dummy.scale.set(radius, length, radius);
+    this.dummy.scale.set(segment.radius * renderState.scale, length, segment.radius * renderState.scale);
     this.dummy.updateMatrix();
   }
 
   localPointToWorld(renderState, point, target) {
     const sin = Math.sin(renderState.angle);
     const cos = Math.cos(renderState.angle);
-    const visualScale = renderState.scale * ANT_VISUAL_SCALE;
-    const localX = point[0] * visualScale;
-    const localY = point[1] * visualScale;
-    const localZ = point[2] * visualScale;
+    const localX = point[0] * renderState.scale;
+    const localY = point[1] * renderState.scale;
+    const localZ = point[2] * renderState.scale;
     target.set(
       renderState.x + localX * cos + localZ * sin,
       renderState.y + localY,
@@ -981,8 +941,8 @@ class AntColony3D {
     this.currentPixelRatio = 1;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x181a18);
-    this.scene.fog = new THREE.Fog(0x181a18, 210, 420);
-    this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 460);
+    this.scene.fog = new THREE.Fog(0x181a18, 145, 285);
+    this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 320);
     this.renderer = this.createRenderer();
     if (!this.renderer) return;
     ui.world.appendChild(this.renderer.domElement);
@@ -1005,8 +965,8 @@ class AntColony3D {
     this.tool = "inspect";
     this.paused = false;
     this.timeScale = 1;
-    this.worldRadius = 132;
-    this.nest = { x: -42, z: 12, radius: 8 };
+    this.worldRadius = 82;
+    this.nest = { x: -22, z: 7, radius: 12 };
     this.selectedAnt = null;
     this.collectedFood = 0;
     this.nextFoodId = 1;
@@ -1016,19 +976,17 @@ class AntColony3D {
     this.food = [];
     this.branches = [];
     this.trails = [];
-    this.terrain = [];
-    this.predators = [];
     this.lastUiUpdate = 0;
     this.resizeWidth = 0;
     this.resizeHeight = 0;
 
-    this.cameraTarget = new THREE.Vector3(this.nest.x * 0.36, 0, this.nest.z * 0.36);
+    this.cameraTarget = new THREE.Vector3(this.nest.x * 0.55, 0, this.nest.z * 0.55);
     this.cameraRenderTarget = this.cameraTarget.clone();
     this.cameraYaw = -0.62;
     this.cameraPitch = 1.05;
     this.targetCameraYaw = this.cameraYaw;
     this.targetCameraPitch = this.cameraPitch;
-    this.cameraDistance = window.innerWidth < 680 ? 252 : 238;
+    this.cameraDistance = window.innerWidth < 680 ? 174 : 162;
     this.targetCameraDistance = this.cameraDistance;
 
     this.sharedGeometries = new Set();
@@ -1102,17 +1060,8 @@ class AntColony3D {
       antDefault: new THREE.MeshStandardMaterial({ color: 0x18130f, roughness: 0.72 }),
       antAppendage: new THREE.MeshStandardMaterial({ color: 0x12100d, roughness: 0.82 }),
       food: new THREE.MeshStandardMaterial({ color: 0xd9a63f, roughness: 0.62 }),
-      foodFruit: new THREE.MeshStandardMaterial({ color: 0xc45b33, roughness: 0.7 }),
-      foodSeed: new THREE.MeshStandardMaterial({ color: 0xb28c45, roughness: 0.72 }),
-      foodLeaf: new THREE.MeshStandardMaterial({ color: 0x6f8d38, roughness: 0.8 }),
       stone: new THREE.MeshStandardMaterial({ color: 0x777c75, roughness: 0.86 }),
       branch: new THREE.MeshStandardMaterial({ color: 0x8a6232, roughness: 0.9 }),
-      terrainMoss: new THREE.MeshBasicMaterial({ color: 0x456f42, transparent: true, opacity: 0.32, depthWrite: false }),
-      terrainLeaf: new THREE.MeshBasicMaterial({ color: 0x7b5b30, transparent: true, opacity: 0.28, depthWrite: false }),
-      terrainSand: new THREE.MeshBasicMaterial({ color: 0xd1b36d, transparent: true, opacity: 0.24, depthWrite: false }),
-      terrainDamp: new THREE.MeshBasicMaterial({ color: 0x3d5f58, transparent: true, opacity: 0.25, depthWrite: false }),
-      predatorBody: new THREE.MeshStandardMaterial({ color: 0x2b211c, roughness: 0.78 }),
-      predatorAccent: new THREE.MeshBasicMaterial({ color: 0xb44a36, transparent: true, opacity: 0.58 }),
       water: new THREE.MeshPhysicalMaterial({
         color: 0x4aa6d9,
         transparent: true,
@@ -1155,12 +1104,12 @@ class AntColony3D {
     if (sun.castShadow) {
       const mapSize = this.quality.shadowQuality === "medium" ? 1024 : 512;
       sun.shadow.mapSize.set(mapSize, mapSize);
-      sun.shadow.camera.left = -145;
-      sun.shadow.camera.right = 145;
-      sun.shadow.camera.top = 145;
-      sun.shadow.camera.bottom = -145;
+      sun.shadow.camera.left = -70;
+      sun.shadow.camera.right = 70;
+      sun.shadow.camera.top = 70;
+      sun.shadow.camera.bottom = -70;
       sun.shadow.camera.near = 20;
-      sun.shadow.camera.far = 280;
+      sun.shadow.camera.far = 180;
       sun.shadow.bias = -0.00015;
     }
     this.scene.add(sun);
@@ -1182,59 +1131,7 @@ class AntColony3D {
     this.sharedGeometries.add(rim.geometry);
     this.sharedMaterials.add(rim.material);
 
-    this.seedTerrain();
     this.createNest();
-  }
-
-  seedTerrain() {
-    const patches = [
-      { kind: "damp", x: -74, z: 52, rx: 30, rz: 18, rotation: -0.42, speed: 0.78, material: this.materials.terrainDamp },
-      { kind: "moss", x: -18, z: 76, rx: 34, rz: 19, rotation: 0.28, speed: 0.88, material: this.materials.terrainMoss },
-      { kind: "leaf", x: 42, z: 55, rx: 38, rz: 23, rotation: -0.22, speed: 0.82, material: this.materials.terrainLeaf },
-      { kind: "sand", x: 70, z: -18, rx: 40, rz: 22, rotation: 0.5, speed: 1.04, material: this.materials.terrainSand },
-      { kind: "damp", x: 18, z: -70, rx: 32, rz: 18, rotation: -0.12, speed: 0.76, material: this.materials.terrainDamp },
-      { kind: "leaf", x: -82, z: -42, rx: 34, rz: 21, rotation: 0.36, speed: 0.84, material: this.materials.terrainLeaf },
-      { kind: "moss", x: 93, z: 34, rx: 22, rz: 14, rotation: 0.18, speed: 0.9, material: this.materials.terrainMoss },
-      { kind: "sand", x: -12, z: -12, rx: 24, rz: 15, rotation: -0.56, speed: 1.02, material: this.materials.terrainSand },
-    ];
-
-    for (const patch of patches) this.createTerrainPatch(patch);
-  }
-
-  createTerrainPatch(patch) {
-    const mesh = new THREE.Mesh(new THREE.CircleGeometry(1, 48), patch.material);
-    mesh.rotation.set(-Math.PI / 2, 0, patch.rotation);
-    mesh.position.set(patch.x, 0.004, patch.z);
-    mesh.scale.set(patch.rx, patch.rz, 1);
-    this.scene.add(mesh);
-    this.sharedGeometries.add(mesh.geometry);
-    this.terrain.push({
-      kind: patch.kind,
-      x: patch.x,
-      z: patch.z,
-      rx: patch.rx,
-      rz: patch.rz,
-      rotation: patch.rotation,
-      cos: Math.cos(patch.rotation),
-      sin: Math.sin(patch.rotation),
-      speed: patch.speed,
-      mesh,
-    });
-  }
-
-  terrainSpeedAt(x, z) {
-    let multiplier = 1;
-    for (const patch of this.terrain) {
-      const dx = x - patch.x;
-      const dz = z - patch.z;
-      const localX = dx * patch.cos + dz * patch.sin;
-      const localZ = -dx * patch.sin + dz * patch.cos;
-      const normalized = (localX * localX) / (patch.rx * patch.rx) + (localZ * localZ) / (patch.rz * patch.rz);
-      if (normalized >= 1) continue;
-      const influence = (1 - normalized) * 0.75;
-      multiplier *= 1 + (patch.speed - 1) * influence;
-    }
-    return clamp(multiplier, 0.64, 1.12);
   }
 
   createNest() {
@@ -1296,7 +1193,7 @@ class AntColony3D {
   }
 
   reset() {
-    for (const list of [this.water, this.stones, this.food, this.branches, this.trails, this.predators]) {
+    for (const list of [this.water, this.stones, this.food, this.branches, this.trails]) {
       for (const item of list) this.disposeDynamicItem(item);
     }
     this.dynamicObjects.clear();
@@ -1306,7 +1203,6 @@ class AntColony3D {
     this.food = [];
     this.branches = [];
     this.trails = [];
-    this.predators = [];
     this.antRenderer?.beginFrame();
     this.antRenderer?.endFrame();
     this.collectedFood = 0;
@@ -1314,7 +1210,6 @@ class AntColony3D {
     this.selectedAnt = null;
     const count = Number(ui.antCount.value);
     for (let i = 0; i < count; i += 1) this.ants.push(new Ant3D(i + 1, this));
-    this.seedNaturalEnvironment();
     this.updateStats();
     this.updateInspector();
   }
@@ -1347,7 +1242,7 @@ class AntColony3D {
     this.currentPixelRatio = Math.min((window.devicePixelRatio || 1) * this.quality.resolutionScale, this.quality.maxPixelRatio);
     this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.setSize(width, height, false);
-    this.cameraDistance = width < 680 ? 252 : 238;
+    this.cameraDistance = width < 680 ? 174 : 162;
     this.targetCameraDistance = this.cameraDistance;
     this.updateCamera();
   }
@@ -1436,8 +1331,6 @@ class AntColony3D {
       }
     }
 
-    this.updatePredators(dt);
-
     for (const trail of this.trails) {
       this.updateTrailPheromone(trail, dt);
       const followVisibility = trail.kind === "food" ? trail.followStrength : 1;
@@ -1494,7 +1387,7 @@ class AntColony3D {
     window.removeEventListener("pagehide", this.boundPageHide);
     this.clearBranchPreview();
     this.antRenderer?.destroy();
-    for (const list of [this.water, this.stones, this.food, this.branches, this.trails, this.predators]) {
+    for (const list of [this.water, this.stones, this.food, this.branches, this.trails]) {
       for (const item of list) this.disposeDynamicItem(item);
     }
     this.assetService.dispose();
@@ -1539,7 +1432,7 @@ class AntColony3D {
     if (this.pointerMap.size === 2 && this.pinchStart) {
       const points = [...this.pointerMap.values()];
       const current = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 138, 340);
+      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 96, 230);
       return;
     }
 
@@ -1598,89 +1491,6 @@ class AntColony3D {
     return { x: hit.x, z: hit.z };
   }
 
-  seedNaturalEnvironment() {
-    const naturalFoods = [
-      { x: -16, z: 42, amount: 12, radius: 3.4, crumbs: 12, material: this.materials.foodSeed, kind: "seed" },
-      { x: 38, z: -32, amount: 15, radius: 4.2, crumbs: 14, material: this.materials.foodFruit, kind: "fruit" },
-      { x: 72, z: 44, amount: 9, radius: 3.1, crumbs: 10, material: this.materials.foodLeaf, kind: "leaf" },
-      { x: -78, z: -46, amount: 13, radius: 3.8, crumbs: 13, material: this.materials.foodSeed, kind: "seed" },
-      { x: 8, z: -82, amount: 10, radius: 3.2, crumbs: 10, material: this.materials.foodFruit, kind: "fruit" },
-    ];
-    for (const food of naturalFoods) this.addFood(food.x, food.z, food);
-
-    const fallenBranches = [
-      { x1: -63, z1: 23, x2: -36, z2: 31 },
-      { x1: 46, z1: 18, x2: 78, z2: 8 },
-      { x1: -18, z1: -52, x2: 18, z2: -66 },
-    ];
-    for (const branch of fallenBranches) this.addBranch(branch);
-
-    this.addPredator({ kind: "spider", x: 64, z: 30, radius: 4.6, threat: 0.86, speed: 0.36, patrolX: 10, patrolZ: 7, phase: 0.2 });
-    this.addPredator({ kind: "beetle", x: -86, z: 10, radius: 5.2, threat: 0.68, speed: 0.25, patrolX: 8, patrolZ: 14, phase: 1.7 });
-    this.addPredator({ kind: "wasp-shadow", x: 24, z: -88, radius: 4.2, threat: 0.74, speed: 0.52, patrolX: 16, patrolZ: 8, phase: 2.8 });
-  }
-
-  updatePredators(dt) {
-    for (const predator of this.predators) {
-      const previousX = predator.x;
-      const previousZ = predator.z;
-      predator.age += dt * predator.speed;
-      predator.x = predator.homeX + Math.cos(predator.age + predator.phase) * predator.patrolX + Math.sin(predator.age * 0.47 + predator.phase) * predator.patrolX * 0.28;
-      predator.z = predator.homeZ + Math.sin(predator.age * 0.82 + predator.phase) * predator.patrolZ + Math.cos(predator.age * 0.35) * predator.patrolZ * 0.22;
-      const distanceFromCenter = Math.hypot(predator.x, predator.z);
-      if (distanceFromCenter > this.worldRadius - predator.radius) {
-        const limit = (this.worldRadius - predator.radius) / distanceFromCenter;
-        predator.x *= limit;
-        predator.z *= limit;
-      }
-      predator.group.position.set(predator.x, 0, predator.z);
-      const travelX = predator.x - previousX;
-      const travelZ = predator.z - previousZ;
-      if (Math.abs(travelX) + Math.abs(travelZ) > 0.0001) predator.group.rotation.y = Math.atan2(travelX, travelZ);
-      predator.ring.scale.setScalar(1 + Math.sin(predator.age * 2.4) * 0.05);
-      predator.ring.material.opacity = 0.12 + predator.threat * 0.08 + Math.sin(predator.age * 3.2) * 0.025;
-    }
-  }
-
-  addPredator(config) {
-    const group = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 8), this.materials.predatorBody);
-    body.position.y = 1.1;
-    body.scale.set(config.radius * 0.72, 0.58, config.radius * 1.12);
-    body.castShadow = this.quality.shadowQuality !== "off";
-    body.receiveShadow = this.quality.shadowQuality !== "off";
-    group.add(body);
-
-    const head = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 6), this.materials.predatorBody);
-    head.position.set(0, 1.05, config.radius * 0.8);
-    head.scale.set(config.radius * 0.42, 0.38, config.radius * 0.38);
-    head.castShadow = this.quality.shadowQuality !== "off";
-    group.add(head);
-
-    const ring = new THREE.Mesh(this.geometries.trailCircle, this.materials.predatorAccent.clone());
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.055;
-    ring.scale.setScalar(config.radius + config.threat * 4.5);
-    group.add(ring);
-
-    group.position.set(config.x, 0, config.z);
-    this.scene.add(group);
-    this.dynamicObjects.add(group);
-    this.predators.push({
-      ...config,
-      x: config.x,
-      z: config.z,
-      homeX: config.x,
-      homeZ: config.z,
-      patrolX: config.patrolX ?? 8,
-      patrolZ: config.patrolZ ?? 8,
-      phase: config.phase ?? rand(0, Math.PI * 2),
-      age: rand(0, 2),
-      group,
-      ring,
-    });
-  }
-
   addWater(x, z, scale = 1) {
     const intensity = Number(ui.intensity.value);
     const radius = 5.5 + intensity * 1.6 * scale + rand(-0.4, 0.8);
@@ -1729,21 +1539,18 @@ class AntColony3D {
     }
   }
 
-  addFood(x, z, options = {}) {
+  addFood(x, z) {
     const intensity = Number(ui.intensity.value);
-    const amount = options.amount ?? 7 + intensity * 4;
-    const radius = options.radius ?? 4.5 + intensity * 0.7;
-    const crumbs = options.crumbs ?? 18;
-    const material = options.material ?? this.materials.food;
+    const amount = 7 + intensity * 4;
     const group = new THREE.Group();
-    const item = { id: this.nextFoodId, x, z, radius, amount, initialAmount: amount, group, crumbs: [], kind: options.kind ?? "placed" };
+    const item = { id: this.nextFoodId, x, z, radius: 4.5 + intensity * 0.7, amount, initialAmount: amount, group, crumbs: [] };
     this.nextFoodId += 1;
-    for (let i = 0; i < crumbs; i += 1) {
-      const crumb = new THREE.Mesh(this.geometries.foodCrumb, material);
+    for (let i = 0; i < 18; i += 1) {
+      const crumb = new THREE.Mesh(this.geometries.foodCrumb, this.materials.food);
       const a = rand(0, Math.PI * 2);
       const r = rand(0, item.radius);
       crumb.position.set(Math.cos(a) * r, 0.52 + rand(0, 0.45), Math.sin(a) * r);
-      crumb.scale.setScalar(rand(options.minScale ?? 0.2, options.maxScale ?? 0.48));
+      crumb.scale.setScalar(rand(0.26, 0.58));
       crumb.castShadow = this.quality.shadowQuality !== "off";
       group.add(crumb);
       item.crumbs.push(crumb);
