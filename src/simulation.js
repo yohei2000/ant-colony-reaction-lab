@@ -172,6 +172,134 @@ function makeGroundTexture() {
   return texture;
 }
 
+function makeWaterSurfaceTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 512;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, 512, 512);
+  const gradient = context.createRadialGradient(230, 220, 30, 256, 256, 250);
+  gradient.addColorStop(0, "rgba(235,252,255,0.72)");
+  gradient.addColorStop(0.42, "rgba(98,186,216,0.42)");
+  gradient.addColorStop(0.78, "rgba(44,117,143,0.27)");
+  gradient.addColorStop(1, "rgba(180,240,250,0.08)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 512, 512);
+
+  context.strokeStyle = "rgba(235,252,255,0.2)";
+  context.lineWidth = 2;
+  for (let i = 0; i < 15; i += 1) {
+    const x = 256 + Math.cos(i * 1.7) * rand(14, 58);
+    const y = 256 + Math.sin(i * 1.35) * rand(10, 52);
+    context.beginPath();
+    context.ellipse(x, y, rand(42, 138), rand(8, 24), rand(-0.7, 0.7), 0, Math.PI * 2);
+    context.stroke();
+  }
+
+  for (let i = 0; i < 580; i += 1) {
+    const alpha = Math.random() * 0.085;
+    context.fillStyle = Math.random() > 0.56 ? `rgba(255,255,255,${alpha})` : `rgba(27,78,90,${alpha})`;
+    context.fillRect(Math.random() * 512, Math.random() * 512, 1, 1);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function makeBranchBarkTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 192;
+  const context = canvas.getContext("2d");
+  const gradient = context.createLinearGradient(0, 0, 512, 192);
+  gradient.addColorStop(0, "#5f3f20");
+  gradient.addColorStop(0.38, "#9a6935");
+  gradient.addColorStop(0.72, "#6f471f");
+  gradient.addColorStop(1, "#b47c43");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 512, 192);
+
+  for (let i = 0; i < 90; i += 1) {
+    const y = Math.random() * 192;
+    const alpha = rand(0.1, 0.34);
+    context.strokeStyle = Math.random() > 0.45 ? `rgba(42,25,13,${alpha})` : `rgba(233,174,101,${alpha * 0.7})`;
+    context.lineWidth = rand(0.6, 2.4);
+    context.beginPath();
+    context.moveTo(0, y);
+    for (let x = 0; x <= 512; x += 32) {
+      context.lineTo(x, y + Math.sin(x * 0.025 + i) * rand(0.8, 4.6) + rand(-2.2, 2.2));
+    }
+    context.stroke();
+  }
+
+  for (let i = 0; i < 28; i += 1) {
+    const x = Math.random() * 512;
+    const y = Math.random() * 192;
+    context.fillStyle = "rgba(39,22,12,0.28)";
+    context.beginPath();
+    context.ellipse(x, y, rand(5, 18), rand(2, 7), rand(-0.6, 0.6), 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = "rgba(202,132,65,0.24)";
+    context.stroke();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1.6, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function makeBranchBumpTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 192;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#777";
+  context.fillRect(0, 0, 512, 192);
+  for (let i = 0; i < 120; i += 1) {
+    const y = Math.random() * 192;
+    context.strokeStyle = Math.random() > 0.5 ? "rgba(25,25,25,0.4)" : "rgba(235,235,235,0.28)";
+    context.lineWidth = rand(0.5, 2.1);
+    context.beginPath();
+    context.moveTo(0, y);
+    for (let x = 0; x <= 512; x += 26) {
+      context.lineTo(x, y + Math.sin(x * 0.03 + i) * rand(1.2, 4.2));
+    }
+    context.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1.6, 1);
+  return texture;
+}
+
+function makeIrregularDiscGeometry(segments = 72, jitter = 0.12) {
+  const points = [];
+  for (let i = 0; i < segments; i += 1) {
+    const angle = (i / segments) * Math.PI * 2;
+    const ripple = 1 + Math.sin(angle * 3.1 + rand(-0.4, 0.4)) * jitter * 0.55 + rand(-jitter, jitter);
+    points.push(new THREE.Vector2(Math.cos(angle) * ripple, Math.sin(angle) * ripple));
+  }
+  const shape = new THREE.Shape(points);
+  return new THREE.ShapeGeometry(shape);
+}
+
+function createCylinderBetween(start, end, radiusTop, radiusBottom, material, radialSegments = 12) {
+  const direction = end.clone().sub(start);
+  const length = direction.length();
+  const geometry = new THREE.CylinderGeometry(radiusTop, radiusBottom, length, radialSegments);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.copy(start).add(end).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+  return mesh;
+}
+
 function getMaterialList(material) {
   if (!material) return [];
   return Array.isArray(material) ? material : [material];
@@ -180,7 +308,7 @@ function getMaterialList(material) {
 function disposeMaterial(material) {
   for (const item of getMaterialList(material)) {
     for (const value of Object.values(item)) {
-      if (value && value.isTexture) value.dispose();
+      if (value && value.isTexture && !value.userData?.sharedProceduralAsset) value.dispose();
     }
     item.dispose();
   }
@@ -242,8 +370,21 @@ class AssetService {
   preloadProceduralAssets() {
     this.manager.itemStart("procedural-ground");
     const groundTexture = makeGroundTexture();
+    groundTexture.userData.sharedProceduralAsset = true;
     groundTexture.anisotropy = 4;
     this.cache.set("groundTexture", groundTexture);
+    const waterSurfaceTexture = makeWaterSurfaceTexture();
+    waterSurfaceTexture.userData.sharedProceduralAsset = true;
+    waterSurfaceTexture.anisotropy = 4;
+    this.cache.set("waterSurfaceTexture", waterSurfaceTexture);
+    const branchBarkTexture = makeBranchBarkTexture();
+    branchBarkTexture.userData.sharedProceduralAsset = true;
+    branchBarkTexture.anisotropy = 6;
+    this.cache.set("branchBarkTexture", branchBarkTexture);
+    const branchBumpTexture = makeBranchBumpTexture();
+    branchBumpTexture.userData.sharedProceduralAsset = true;
+    branchBumpTexture.anisotropy = 6;
+    this.cache.set("branchBumpTexture", branchBumpTexture);
     this.manager.itemEnd("procedural-ground");
   }
 
@@ -1062,21 +1203,46 @@ class AntColony3D {
       antAppendage: new THREE.MeshStandardMaterial({ color: 0x12100d, roughness: 0.82 }),
       food: new THREE.MeshStandardMaterial({ color: 0xd9a63f, roughness: 0.62 }),
       stone: new THREE.MeshStandardMaterial({ color: 0x777c75, roughness: 0.86 }),
-      branch: new THREE.MeshStandardMaterial({ color: 0x8a6232, roughness: 0.9 }),
-      branchDark: new THREE.MeshStandardMaterial({ color: 0x4e351d, roughness: 0.96 }),
-      branchTip: new THREE.MeshStandardMaterial({ color: 0xb07a3e, roughness: 0.88 }),
+      branch: new THREE.MeshStandardMaterial({
+        color: 0x9a6a35,
+        map: this.assetService.get("branchBarkTexture"),
+        bumpMap: this.assetService.get("branchBumpTexture"),
+        bumpScale: 0.18,
+        roughness: 0.94,
+      }),
+      branchDark: new THREE.MeshStandardMaterial({
+        color: 0x5d371c,
+        map: this.assetService.get("branchBarkTexture"),
+        bumpMap: this.assetService.get("branchBumpTexture"),
+        bumpScale: 0.24,
+        roughness: 0.98,
+      }),
+      branchTip: new THREE.MeshStandardMaterial({
+        color: 0xc38644,
+        map: this.assetService.get("branchBarkTexture"),
+        bumpMap: this.assetService.get("branchBumpTexture"),
+        bumpScale: 0.12,
+        roughness: 0.9,
+      }),
       water: new THREE.MeshPhysicalMaterial({
-        color: 0x4aa6d9,
+        color: 0x78c7df,
+        map: this.assetService.get("waterSurfaceTexture"),
         transparent: true,
         opacity: 0.42,
-        roughness: 0.12,
+        roughness: 0.06,
         metalness: 0,
-        transmission: 0.15,
+        transmission: 0.22,
+        clearcoat: 0.65,
+        clearcoatRoughness: 0.18,
         depthWrite: false,
       }),
+      waterDepth: new THREE.MeshBasicMaterial({ color: 0x2d7689, transparent: true, opacity: 0.13, depthWrite: false }),
+      waterFoam: new THREE.MeshBasicMaterial({ color: 0xe2fbff, transparent: true, opacity: 0.16, depthWrite: false }),
+      waterShadow: new THREE.MeshBasicMaterial({ color: 0x173b36, transparent: true, opacity: 0.08, depthWrite: false }),
       waterRing: new THREE.MeshBasicMaterial({ color: 0x9ce7ff, transparent: true, opacity: 0.48 }),
       waterRipple: new THREE.MeshBasicMaterial({ color: 0xc8f6ff, transparent: true, opacity: 0.24, depthWrite: false }),
       waterHighlight: new THREE.MeshBasicMaterial({ color: 0xf1feff, transparent: true, opacity: 0.32, depthWrite: false }),
+      branchShadow: new THREE.MeshBasicMaterial({ color: 0x20160d, transparent: true, opacity: 0.2, depthWrite: false }),
       impact: new THREE.MeshBasicMaterial({ color: 0xe47f63, transparent: true, opacity: 0.42 }),
       trailFood: new THREE.MeshBasicMaterial({ color: 0xd9a63f, transparent: true, opacity: 0.2, depthWrite: false }),
       trailAlarm: new THREE.MeshBasicMaterial({ color: 0xd96f58, transparent: true, opacity: 0.24, depthWrite: false }),
@@ -1320,6 +1486,9 @@ class AntColony3D {
       patch.group.scale.setScalar(1 + Math.sin(patch.age * 2.5) * 0.015);
       patch.ring.material.opacity = Math.max(0.1, patch.power * 0.44);
       patch.ring.scale.setScalar(1 + (patch.age % 1) * 0.05);
+      patch.shore.material.opacity = patch.power * (0.075 + Math.sin(patch.age * 1.3) * 0.012);
+      patch.shadow.material.opacity = patch.power * 0.075;
+      patch.depth.material.opacity = patch.power * 0.12;
       for (const ripple of patch.ripples) {
         const phase = (patch.age * ripple.speed + ripple.offset) % 1;
         const scale = ripple.baseScale * (0.82 + phase * 0.34);
@@ -1509,18 +1678,33 @@ class AntColony3D {
     const intensity = Number(ui.intensity.value);
     const radius = 5.5 + intensity * 1.6 * scale + rand(-0.4, 0.8);
     const group = new THREE.Group();
-    const pool = new THREE.Mesh(this.geometries.waterCircle, this.materials.water.clone());
+    const waterGeometry = makeIrregularDiscGeometry(88, 0.055);
+    const shadow = new THREE.Mesh(waterGeometry, this.materials.waterShadow.clone());
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.scale.set(radius * 1.32, radius * 0.96, 1);
+    shadow.position.y = 0.022;
+    group.add(shadow);
+
+    const depth = new THREE.Mesh(waterGeometry, this.materials.waterDepth.clone());
+    depth.rotation.x = -Math.PI / 2;
+    depth.scale.set(radius * 0.72, radius * 0.5, 1);
+    depth.rotation.z = rand(-0.5, 0.5);
+    depth.position.y = 0.029;
+    group.add(depth);
+
+    const pool = new THREE.Mesh(waterGeometry, this.materials.water.clone());
     pool.rotation.x = -Math.PI / 2;
     pool.scale.set(radius * 1.18, radius * 0.82, 1);
     pool.position.y = 0.035;
-    pool.material.opacity = clamp(0.28 + intensity * 0.045, 0.28, 0.52);
+    pool.material.opacity = clamp(0.34 + intensity * 0.04, 0.34, 0.54);
+    pool.rotation.z = rand(-0.12, 0.12);
     group.add(pool);
 
-    const shore = new THREE.Mesh(this.geometries.waterCircle, this.materials.waterRipple.clone());
-    shore.rotation.x = -Math.PI / 2;
-    shore.scale.set(radius * 1.26, radius * 0.9, 1);
-    shore.position.y = 0.032;
-    shore.material.opacity = 0.13;
+    const shore = new THREE.Mesh(this.geometries.impactRing, this.materials.waterFoam.clone());
+    shore.rotation.x = Math.PI / 2;
+    shore.scale.set(radius * 1.2, radius * 0.85, radius * 1.2);
+    shore.position.y = 0.066;
+    shore.material.opacity = 0.08 + intensity * 0.012;
     group.add(shore);
 
     const highlights = [];
@@ -1538,6 +1722,19 @@ class AntColony3D {
       highlight.userData.offset = rand(0, Math.PI * 2);
       highlights.push(highlight);
       group.add(highlight);
+    }
+
+    const fleckCount = intensity > 4 ? 8 : 5;
+    for (let i = 0; i < fleckCount; i += 1) {
+      const fleck = new THREE.Mesh(this.geometries.waterCircle, this.materials.waterFoam.clone());
+      fleck.rotation.x = -Math.PI / 2;
+      const a = rand(0, Math.PI * 2);
+      const r = rand(radius * 0.52, radius * 1.02);
+      fleck.position.set(Math.cos(a) * r, 0.071 + i * 0.001, Math.sin(a) * r * 0.76);
+      fleck.rotation.z = rand(0, Math.PI);
+      fleck.scale.set(radius * rand(0.018, 0.042), radius * rand(0.006, 0.016), 1);
+      fleck.material.opacity = rand(0.08, 0.18);
+      group.add(fleck);
     }
 
     const ripples = [];
@@ -1565,7 +1762,7 @@ class AntColony3D {
     group.position.set(x, 0, z);
     this.scene.add(group);
     this.dynamicObjects.add(group);
-    this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring, ripples, highlights });
+    this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring, shore, shadow, depth, ripples, highlights });
   }
 
   addStone(x, z) {
@@ -1655,18 +1852,39 @@ class AntColony3D {
     const center = new THREE.Vector3((branch.x1 + branch.x2) / 2, width * 0.95, (branch.z1 + branch.z2) / 2);
     const group = new THREE.Group();
 
-    const trunkGeometry = new THREE.CylinderGeometry(width * rand(0.9, 1.08), width * rand(0.58, 0.78), length, 12);
-    const trunk = new THREE.Mesh(trunkGeometry, this.materials.branch);
-    trunk.position.copy(center);
-    trunk.quaternion.setFromUnitVectors(up, direction);
-    trunk.rotation.z += rand(-0.08, 0.08);
-    trunk.castShadow = this.quality.shadowQuality !== "off";
-    trunk.receiveShadow = this.quality.shadowQuality !== "off";
-    group.add(trunk);
+    const contactShadow = new THREE.Mesh(this.geometries.waterCircle, this.materials.branchShadow.clone());
+    contactShadow.rotation.x = -Math.PI / 2;
+    contactShadow.rotation.z = -Math.atan2(dz, dx);
+    contactShadow.position.set(center.x, 0.024, center.z);
+    contactShadow.scale.set(length * 0.52, width * 2.1, 1);
+    group.add(contactShadow);
+
+    const start = new THREE.Vector3(branch.x1, width * 0.92, branch.z1);
+    const end = new THREE.Vector3(branch.x2, width * 0.92, branch.z2);
+    const segmentCount = clamp(Math.floor(length / 10), 4, 8);
+    const points = [];
+    const bendPhase = rand(0, Math.PI * 2);
+    for (let i = 0; i <= segmentCount; i += 1) {
+      const t = i / segmentCount;
+      const endpointFade = Math.sin(t * Math.PI);
+      const wobble = side.clone().multiplyScalar(endpointFade * Math.sin(t * Math.PI * 2 + bendPhase) * width * rand(0.12, 0.34));
+      const lift = Math.sin(t * Math.PI) * width * rand(0.02, 0.12);
+      points.push(start.clone().lerp(end, t).add(wobble).add(new THREE.Vector3(0, lift, 0)));
+    }
+
+    for (let i = 0; i < points.length - 1; i += 1) {
+      const t = i / Math.max(1, points.length - 2);
+      const radiusA = width * (1.02 - t * 0.28) * rand(0.94, 1.08);
+      const radiusB = width * (0.94 - t * 0.3) * rand(0.9, 1.04);
+      const trunk = createCylinderBetween(points[i], points[i + 1], radiusB, radiusA, this.materials.branch, 12);
+      trunk.castShadow = this.quality.shadowQuality !== "off";
+      trunk.receiveShadow = this.quality.shadowQuality !== "off";
+      group.add(trunk);
+    }
 
     for (const offset of [-0.5, 0.5]) {
       const knob = new THREE.Mesh(this.geometries.branchKnob, this.materials.branchTip);
-      knob.position.copy(center).add(direction.clone().multiplyScalar(length * offset));
+      knob.position.copy(offset < 0 ? points[0] : points[points.length - 1]);
       knob.position.y += width * 0.02;
       knob.scale.set(width * rand(0.68, 0.92), width * rand(0.42, 0.62), width * rand(0.68, 0.92));
       knob.castShadow = this.quality.shadowQuality !== "off";
@@ -1679,9 +1897,12 @@ class AntColony3D {
       const knotLength = width * rand(0.2, 0.42);
       const knotGeometry = new THREE.CylinderGeometry(width * rand(0.82, 1.04), width * rand(0.76, 0.96), knotLength, 10);
       const knot = new THREE.Mesh(knotGeometry, this.materials.branchDark);
-      knot.position.copy(center).add(direction.clone().multiplyScalar((t - 0.5) * length));
+      const segmentIndex = Math.min(points.length - 2, Math.floor(t * (points.length - 1)));
+      const segmentT = t * (points.length - 1) - segmentIndex;
+      const segmentDirection = points[segmentIndex + 1].clone().sub(points[segmentIndex]).normalize();
+      knot.position.copy(points[segmentIndex]).lerp(points[segmentIndex + 1], segmentT);
       knot.position.y += width * 0.012;
-      knot.quaternion.setFromUnitVectors(up, direction);
+      knot.quaternion.setFromUnitVectors(up, segmentDirection);
       knot.castShadow = this.quality.shadowQuality !== "off";
       group.add(knot);
     }
@@ -1692,12 +1913,16 @@ class AntColony3D {
       const sideSign = chance(0.5) ? 1 : -1;
       const twigLength = width * rand(2.4, 4.6);
       const twigWidth = width * rand(0.18, 0.32);
+      const segmentIndex = Math.min(points.length - 2, Math.floor(t * (points.length - 1)));
+      const segmentT = t * (points.length - 1) - segmentIndex;
+      const segmentDirection = points[segmentIndex + 1].clone().sub(points[segmentIndex]).normalize();
       const twigDirection = direction
         .clone()
         .multiplyScalar(rand(-0.18, 0.28))
         .add(side.clone().multiplyScalar(sideSign * rand(0.64, 0.96)))
+        .add(segmentDirection.multiplyScalar(0.18))
         .normalize();
-      const base = center.clone().add(direction.clone().multiplyScalar((t - 0.5) * length));
+      const base = points[segmentIndex].clone().lerp(points[segmentIndex + 1], segmentT);
       const twigGeometry = new THREE.CylinderGeometry(twigWidth * 0.8, twigWidth * 1.18, twigLength, 8);
       const twig = new THREE.Mesh(twigGeometry, this.materials.branch);
       twig.position.copy(base).add(twigDirection.clone().multiplyScalar(twigLength * 0.48));

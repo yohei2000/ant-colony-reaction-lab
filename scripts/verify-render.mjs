@@ -288,11 +288,15 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
         });
         const water = sim.water[sim.water.length - 1];
         const branch = sim.branches[sim.branches.length - 1];
+        const waterHasTexture = Boolean(water?.group?.children?.some((child) => child.material?.map));
+        const branchHasBump = Boolean(branch?.group?.children?.some((child) => child.material?.bumpMap));
         return {
           waterChildren: water?.group?.children?.length ?? 0,
           waterRipples: water?.ripples?.length ?? 0,
           waterHighlights: water?.highlights?.length ?? 0,
+          waterHasTexture,
           branchChildren: branch?.group?.children?.length ?? 0,
+          branchHasBump,
           branchWidth: branch?.width ?? 0,
         };
       })()`,
@@ -303,7 +307,9 @@ async function verifyViewport({ label, width, height }, targetUrl, outputDir, in
       toolVisuals.waterChildren < 7 ||
       toolVisuals.waterRipples < 3 ||
       toolVisuals.waterHighlights < 2 ||
-      toolVisuals.branchChildren < 6 ||
+      !toolVisuals.waterHasTexture ||
+      toolVisuals.branchChildren < 10 ||
+      !toolVisuals.branchHasBump ||
       toolVisuals.branchWidth <= 0
     ) {
       throw new Error(`${label}: water/branch visual probe failed: ${JSON.stringify(toolVisuals)}`);
