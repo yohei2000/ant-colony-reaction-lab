@@ -5,6 +5,8 @@ import { createGameState, syncRenderedAnts } from './game/state';
 import { applyOfflineProgress, updateGame } from './game/simulation';
 import { installDebugApi } from './debug';
 import { InputController } from './input';
+import { Canvas2DRenderer } from './render/canvas2dScene';
+import type { RenderSurface } from './render/renderSurface';
 import { SceneRenderer } from './render/scene';
 import { UIController } from './ui';
 
@@ -28,7 +30,7 @@ const toolbarElement = toolbar;
 const tabContentElement = tabContent;
 const uiRootElement = uiRoot;
 
-let renderer: SceneRenderer | null = null;
+let renderer: RenderSurface | null = null;
 let input: InputController | null = null;
 let ui: UIController | null = null;
 let animationId = 0;
@@ -41,7 +43,7 @@ start();
 
 function start(): void {
   setLoadingProgress(16);
-  if (!supportsWebGL()) {
+  if (!supportsWebGL() && !supportsCanvas2D()) {
     showWebGLError();
     return;
   }
@@ -51,7 +53,7 @@ function start(): void {
   const state = createGameState(colony);
   setLoadingProgress(56);
 
-  renderer = new SceneRenderer(gameCanvas);
+  renderer = supportsWebGL() ? new SceneRenderer(gameCanvas) : new Canvas2DRenderer(gameCanvas);
   input = new InputController(gameCanvas, renderer, state, () => {
     ui?.render(true);
     saveColonyState(state.colony);
@@ -140,6 +142,15 @@ function supportsWebGL(): boolean {
         testCanvas.getContext('webgl') ||
         testCanvas.getContext('experimental-webgl')
     );
+  } catch {
+    return false;
+  }
+}
+
+function supportsCanvas2D(): boolean {
+  try {
+    const testCanvas = document.createElement('canvas');
+    return Boolean(testCanvas.getContext('2d'));
   } catch {
     return false;
   }

@@ -4,7 +4,7 @@ import { addPlacedItem, createDefaultColony, createGameState } from './game/stat
 import { applyOfflineProgress, updateGame } from './game/simulation';
 import { getRuntimeStats, purchaseUpgrade } from './game/upgrades';
 import type { GameState } from './game/types';
-import type { CanvasSample, RendererInfoSnapshot, SceneRenderer } from './render/scene';
+import type { CanvasSample, RendererInfoSnapshot, RenderSurface } from './render/renderSurface';
 
 export interface Ant3dDebugApi {
   getSnapshot: () => Record<string, unknown>;
@@ -28,7 +28,7 @@ declare global {
   }
 }
 
-export function installDebugApi(state: GameState, renderer: SceneRenderer): void {
+export function installDebugApi(state: GameState, renderer: RenderSurface): void {
   window.__ANT3D_DEBUG__ = {
     getSnapshot: () => ({
       antPopulation: state.colony.antPopulation,

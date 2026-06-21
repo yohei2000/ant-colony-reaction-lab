@@ -1,6 +1,6 @@
 import { addPlacedItem, eraseAt } from './game/state';
 import type { GameState } from './game/types';
-import type { SceneRenderer } from './render/scene';
+import type { RenderSurface } from './render/renderSurface';
 
 type ChangeCallback = () => void;
 
@@ -15,7 +15,7 @@ export class InputController {
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
-    private readonly renderer: SceneRenderer,
+    private readonly renderer: RenderSurface,
     private readonly state: GameState,
     private readonly onChange: ChangeCallback
   ) {

@@ -47,6 +47,7 @@ try {
       hasTouch: false
     });
     await runWebGL1FallbackCheck(browser);
+    await runCanvas2DFallbackCheck(browser);
   } finally {
     await browser.close();
   }
@@ -58,6 +59,39 @@ try {
 } finally {
   stopServer(server);
   await Promise.race([once(server, 'exit'), sleep(1200)]).catch(() => undefined);
+}
+
+async function runCanvas2DFallbackCheck(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    deviceScaleFactor: 2
+  });
+  await context.addInitScript(() => {
+    window.localStorage.removeItem('ant3d.colonyState');
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function patchedGetContext(type, attributes) {
+      if (type === 'webgl2' || type === 'webgl' || type === 'experimental-webgl') {
+        return null;
+      }
+      return originalGetContext.call(this, type, attributes);
+    };
+  });
+  const page = await context.newPage();
+  await page.goto(BASE_URL, { waitUntil: 'networkidle' });
+  await page.waitForFunction(() => Boolean(window.__ANT3D_DEBUG__));
+  await page.waitForTimeout(600);
+
+  const rendererInfo = await page.evaluate(() => window.__ANT3D_DEBUG__.getRendererInfo());
+  assert(rendererInfo.rendererMode === 'canvas2d', 'canvas2d fallback: renderer starts without WebGL');
+  const sample = await page.evaluate(() => window.__ANT3D_DEBUG__.sampleCanvas());
+  assert(sample.brightPixels > 20, 'canvas2d fallback: canvas has visible pixels');
+  assert(sample.colorVariance > 1, 'canvas2d fallback: canvas is not a flat color');
+  checks.push(
+    `canvas2d fallback: drawCalls=${rendererInfo.drawCalls}, pixelRatio=${rendererInfo.pixelRatio}`
+  );
+  await context.close();
 }
 
 async function runWebGL1FallbackCheck(browser) {

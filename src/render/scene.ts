@@ -3,24 +3,11 @@ import { MAX_PHEROMONES, WORLD_RADIUS } from '../game/constants';
 import type { GameState, PheromoneSignal, PlacedItem } from '../game/types';
 import { AntInstancedRenderer } from './antMesh';
 import { disposeMaterial, disposeObject3D } from './dispose';
-
-export interface RendererInfoSnapshot {
-  drawCalls: number;
-  triangles: number;
-  textures: number;
-  pixelRatio: number;
-  isWebGL2: boolean;
-}
-
-export interface CanvasSample {
-  sampledPixels: number;
-  brightPixels: number;
-  colorVariance: number;
-}
+import type { CanvasSample, RendererInfoSnapshot, RenderSurface } from './renderSurface';
 
 const PHEROMONE_SIGNALS: PheromoneSignal[] = ['food', 'alarm', 'rescue', 'water'];
 
-export class SceneRenderer {
+export class SceneRenderer implements RenderSurface {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(44, 1, 0.1, 80);
@@ -129,7 +116,8 @@ export class SceneRenderer {
       triangles: this.renderer.info.render.triangles,
       textures: this.renderer.info.memory.textures,
       pixelRatio: this.renderer.getPixelRatio(),
-      isWebGL2: this.renderer.capabilities.isWebGL2
+      isWebGL2: this.renderer.capabilities.isWebGL2,
+      rendererMode: 'webgl'
     };
   }
 
