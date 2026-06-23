@@ -10,5 +10,6 @@ for (const entry of ["index.html", "styles.css", ".nojekyll", "src"]) {
   if (!existsSync(entry)) throw new Error(`Missing build input: ${entry}`);
   await cp(resolve(entry), resolve(outDir, entry), { recursive: true });
 }
+if (existsSync("assets")) await cp(resolve("assets"), resolve(outDir, "assets"), { recursive: true });
 
 console.log(`Built static site: ${outDir}`);

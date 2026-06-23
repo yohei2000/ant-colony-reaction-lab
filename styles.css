@@ -488,6 +488,27 @@ select {
   line-height: 1.25;
 }
 
+.natural-food-control,
+.food-spawn-rate-control {
+  grid-template-columns: 38px minmax(0, 1fr) 42px;
+}
+
+.natural-food-control input {
+  justify-self: start;
+  width: 18px;
+  height: 18px;
+}
+
+.natural-food-control small {
+  grid-column: 3;
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+
+.food-spawn-rate-control select {
+  grid-column: 2 / 4;
+}
+
 .toolbelt {
   position: absolute;
   left: max(10px, env(safe-area-inset-left));

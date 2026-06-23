@@ -33,6 +33,7 @@ jobs:
           mkdir public
           cp index.html styles.css .nojekyll public/
           cp -R src public/src
+          if [ -d assets ]; then cp -R assets public/assets; fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
