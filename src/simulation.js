@@ -11,6 +11,8 @@ const ui = {
   antCountValue: document.querySelector("#antCountValue"),
   intensity: document.querySelector("#intensity"),
   intensityValue: document.querySelector("#intensityValue"),
+  foodTypeSelect: document.querySelector("#foodTypeSelect"),
+  foodTypeHint: document.querySelector("#foodTypeHint"),
   statExplore: document.querySelector("#statExplore"),
   statAlert: document.querySelector("#statAlert"),
   statRescue: document.querySelector("#statRescue"),
@@ -105,6 +107,7 @@ const ROLE_LABELS = {
 
 const STATE_LABELS = {
   explore: "探索",
+  harvest: "採取",
   return: "帰巣",
   searchNest: "巣探し",
   panic: "避難",
@@ -150,6 +153,122 @@ const HOMING_PARAMS = {
   searchFallbackDelay: 8,
   searchGiveUpDelay: 18,
 };
+
+const FOOD_TYPES = {
+  sugar: {
+    id: "sugar",
+    label: "糖液",
+    shortLabel: "糖",
+    hint: "糖液: 発見しやすく軽い",
+    color: 0xe7c95a,
+    amountBase: 8,
+    amountPerIntensity: 4,
+    radiusBase: 4.2,
+    radiusPerIntensity: 0.55,
+    detectRadius: 72,
+    directAttraction: 1.25,
+    pheromoneStrength: 1.25,
+    trunkStrength: 0.04,
+    harvestTime: 0.12,
+    loadSize: 0.42,
+    carrySpeedMultiplier: 0.92,
+    energyValue: 1.2,
+    storageValue: 0.65,
+    broodValue: 0.25,
+    materialValue: 0,
+    requiredHelpers: 1,
+    cooperative: false,
+    roleAffinity: { scout: 1.25, worker: 1.05, nurse: 0.65, guard: 0.55 },
+  },
+  seed: {
+    id: "seed",
+    label: "種子",
+    shortLabel: "種",
+    hint: "種子: 貯蔵価値が高い",
+    color: 0xb88445,
+    amountBase: 7,
+    amountPerIntensity: 3,
+    radiusBase: 4.8,
+    radiusPerIntensity: 0.65,
+    detectRadius: 50,
+    directAttraction: 0.9,
+    pheromoneStrength: 0.85,
+    trunkStrength: 0.08,
+    harvestTime: 0.55,
+    loadSize: 0.55,
+    carrySpeedMultiplier: 0.72,
+    energyValue: 0.8,
+    storageValue: 1.25,
+    broodValue: 0.45,
+    materialValue: 0,
+    requiredHelpers: 1,
+    cooperative: false,
+    roleAffinity: { scout: 0.75, worker: 1.3, nurse: 0.75, guard: 0.85 },
+  },
+  protein: {
+    id: "protein",
+    label: "タンパク",
+    shortLabel: "蛋",
+    hint: "タンパク: 育児価値が高い",
+    color: 0xd08757,
+    amountBase: 9,
+    amountPerIntensity: 4,
+    radiusBase: 4.8,
+    radiusPerIntensity: 0.7,
+    detectRadius: 58,
+    directAttraction: 1.05,
+    pheromoneStrength: 1.15,
+    trunkStrength: 0.07,
+    harvestTime: 0.75,
+    loadSize: 0.5,
+    carrySpeedMultiplier: 0.76,
+    energyValue: 0.9,
+    storageValue: 0.9,
+    broodValue: 1.45,
+    materialValue: 0,
+    requiredHelpers: 1,
+    cooperative: false,
+    roleAffinity: { scout: 0.75, worker: 1.05, nurse: 1.25, guard: 1.15 },
+  },
+  largePrey: {
+    id: "largePrey",
+    label: "大型餌",
+    shortLabel: "大",
+    hint: "大型餌: 複数匹で処理",
+    color: 0x9a6a42,
+    amountBase: 16,
+    amountPerIntensity: 7,
+    radiusBase: 6.8,
+    radiusPerIntensity: 0.9,
+    detectRadius: 64,
+    directAttraction: 0.95,
+    pheromoneStrength: 1.65,
+    trunkStrength: 0.12,
+    harvestTime: 2.4,
+    loadSize: 0.75,
+    carrySpeedMultiplier: 0.55,
+    energyValue: 1.0,
+    storageValue: 1.25,
+    broodValue: 1.35,
+    materialValue: 0,
+    requiredHelpers: 3,
+    cooperative: true,
+    roleAffinity: { scout: 0.55, worker: 1.3, nurse: 0.65, guard: 1.2 },
+  },
+};
+
+const FOOD_TYPE_ORDER = ["sugar", "seed", "protein", "largePrey"];
+const DEFAULT_FOOD_TYPE = FOOD_TYPES.sugar;
+
+function getFoodType(type) {
+  return FOOD_TYPES[type] ?? DEFAULT_FOOD_TYPE;
+}
+
+function createFoodTypeTotals() {
+  const totals = {};
+  for (const type of FOOD_TYPE_ORDER) totals[type] = 0;
+  return totals;
+}
 
 function closestPointOnSegment(px, pz, ax, az, bx, bz) {
   const vx = bx - ax;
@@ -504,8 +623,8 @@ const PHEROMONE_FIELD_PARAMS = {
 class PheromoneFieldSystem {
   constructor(sim, options = {}) {
     this.sim = sim;
-    this.resolution = options.resolution ?? 128;
-    this.fieldRadius = options.fieldRadius ?? sim.worldRadius + 8;
+    this.resolution = options.resolution ?? (sim.worldRadius > 140 ? 160 : 128);
+    this.fieldRadius = options.fieldRadius ?? sim.worldRadius + (sim.fieldMargin ?? 12);
     this.fieldSize = this.fieldRadius * 2;
     this.cellSize = this.fieldSize / this.resolution;
     this.invCellSize = 1 / this.cellSize;
@@ -854,7 +973,12 @@ class Ant3D {
     this.wet = 0;
     this.stun = 0;
     this.carrying = 0;
+    this.carryingFoodType = null;
+    this.carryingLoad = 0;
+    this.carryingFoodValue = 0;
     this.foodSourceId = null;
+    this.targetFoodId = null;
+    this.harvestTimer = 0;
     this.energy = rand(0.55, 1);
     this.lastTrail = rand(0, 1);
     this.homeTimer = rand(0, 8);
@@ -869,6 +993,7 @@ class Ant3D {
       alarm: 0,
       closestFood: null,
       foodDistance: Infinity,
+      foodScore: 0,
     };
     this.traits = {
       curiosity: rand(0.18, 1),
@@ -985,6 +1110,7 @@ class Ant3D {
 
     if (this.state === "panic") this.updatePanic(dt, sim, steering, sensed);
     else if (this.state === "wet") this.updateWet(dt, sim, steering);
+    else if (this.state === "harvest") this.updateHarvest(dt, sim, steering);
     else if (this.state === "return") this.updateReturn(dt, sim, steering);
     else if (this.state === "searchNest") this.updateSearchNest(dt, sim, steering);
     else if (this.state === "rescue") this.updateRescue(dt, sim, steering);
@@ -996,6 +1122,10 @@ class Ant3D {
 
   setState(nextState) {
     if (this.state !== nextState) {
+      if (nextState !== "harvest") {
+        this.targetFoodId = null;
+        this.harvestTimer = 0;
+      }
       this.state = nextState;
       this.stateTime = 0;
     }
@@ -1055,16 +1185,32 @@ class Ant3D {
   }
 
   completeNestArrival(sim) {
-    if (this.carrying > 0) {
-      sim.collectedFood += this.carrying;
-      sim.pheromones?.deposit("trunk", this.x, this.z, 0.22, 5.5);
-    }
+    this.deliverFoodToNest(sim);
     this.carrying = 0;
+    this.carryingFoodType = null;
+    this.carryingLoad = 0;
+    this.carryingFoodValue = 0;
     this.foodSourceId = null;
+    this.targetFoodId = null;
+    this.harvestTimer = 0;
     this.energy = 1;
     this.homeTimer = 0;
     this.resetPathIntegration(sim);
     this.setState("explore");
+  }
+
+  deliverFoodToNest(sim) {
+    if (this.carrying <= 0) return;
+    const type = this.carryingFoodType ?? "sugar";
+    const config = getFoodType(type);
+    const load = this.carryingLoad || this.carrying || config.loadSize;
+    sim.collectedFood += load * config.storageValue;
+    sim.collectedByType[type] = (sim.collectedByType[type] ?? 0) + load;
+    sim.colonyStores.energy += load * config.energyValue;
+    sim.colonyStores.storage += load * config.storageValue;
+    sim.colonyStores.brood += load * config.broodValue;
+    sim.colonyStores.material += load * (config.materialValue ?? 0);
+    sim.pheromones?.deposit("trunk", this.x, this.z, 0.18 + config.trunkStrength * 1.2, 5.5);
   }
 
   addNestOdorSteering(sim, steering, radiusMultiplier, maxGain) {
@@ -1108,6 +1254,7 @@ class Ant3D {
     sensed.alarm = 0;
     sensed.closestFood = null;
     sensed.foodDistance = Infinity;
+    sensed.foodScore = 0;
 
     for (const patch of sim.water) {
       const d = distance2(this.x, this.z, patch.x, patch.z);
@@ -1177,7 +1324,20 @@ class Ant3D {
     for (const food of sim.food) {
       if (food.amount <= 0) continue;
       const d = distance2(this.x, this.z, food.x, food.z);
-      if (d < sensed.foodDistance) {
+      const config = food.config ?? getFoodType(food.type);
+      const affinity = config.roleAffinity[this.role] ?? 1;
+      const effectiveDetectRadius = config.detectRadius * (0.78 + this.traits.curiosity * 0.44);
+      if (d > effectiveDetectRadius) continue;
+      const proximity = clamp(1 - d / effectiveDetectRadius, 0, 1);
+      const amountFactor = clamp(food.amount / food.initialAmount, 0.15, 1);
+      let traitFactor = 0.7 + this.traits.curiosity * 0.45;
+      if (config.cooperative) traitFactor *= 0.65 + this.traits.social * 0.75;
+      if (food.type === "seed" || food.type === "largePrey") traitFactor *= 0.75 + this.traits.persistence * 0.6;
+      if (food.type === "largePrey" && this.role !== "guard") traitFactor *= 0.86 + this.traits.caution * 0.18;
+      const helperSignal = config.cooperative ? 1 + clamp((food.lastHarvesterCount ?? 0) / config.requiredHelpers, 0, 1) * 0.25 : 1;
+      const score = proximity * amountFactor * config.directAttraction * affinity * traitFactor * helperSignal;
+      if (score > sensed.foodScore) {
+        sensed.foodScore = score;
         sensed.foodDistance = d;
         sensed.closestFood = food;
       }
@@ -1187,18 +1347,24 @@ class Ant3D {
   }
 
   updateExplore(dt, sim, steering, sensed) {
-    if (sensed.closestFood && sensed.foodDistance < sensed.closestFood.radius + 1.5 && this.role !== "guard") {
-      this.carrying = Math.min(1, sensed.closestFood.amount);
-      this.foodSourceId = sensed.closestFood.id;
-      sensed.closestFood.amount -= this.carrying * 0.72;
-      sim.refreshFoodMesh(sensed.closestFood);
-      this.setState("return");
+    if (sensed.closestFood && sensed.foodDistance < sensed.closestFood.radius + 1.5) {
+      this.targetFoodId = sensed.closestFood.id;
+      this.harvestTimer = 0;
+      this.setState("harvest");
       return;
     }
 
-    if (sensed.closestFood && sensed.foodDistance < 45 + this.traits.curiosity * 26) {
+    if (sensed.closestFood) {
+      const config = sensed.closestFood.config ?? getFoodType(sensed.closestFood.type);
       const sourceRatio = clamp(sensed.closestFood.amount / sensed.closestFood.initialAmount, 0, 1);
-      const strength = (1 - sensed.foodDistance / 75) * (0.85 + this.traits.curiosity) * (0.35 + sourceRatio * 0.65);
+      const affinity = config.roleAffinity[this.role] ?? 1;
+      const effectiveRange = config.detectRadius * (0.72 + this.traits.curiosity * 0.42);
+      const strength =
+        clamp(1 - sensed.foodDistance / effectiveRange, 0, 1) *
+        config.directAttraction *
+        affinity *
+        (0.62 + this.traits.curiosity * 0.55) *
+        (0.35 + sourceRatio * 0.65);
       steering.x += ((sensed.closestFood.x - this.x) / (sensed.foodDistance || 1)) * strength;
       steering.z += ((sensed.closestFood.z - this.z) / (sensed.foodDistance || 1)) * strength;
     }
@@ -1239,6 +1405,9 @@ class Ant3D {
     if (this.homeTimer > 9 + this.traits.persistence * 7 || this.energy < 0.2) {
       this.setState("return");
       this.carrying = 0;
+      this.carryingFoodType = null;
+      this.carryingLoad = 0;
+      this.carryingFoodValue = 0;
       this.foodSourceId = null;
       this.homeTimer = 0;
       return;
@@ -1253,6 +1422,83 @@ class Ant3D {
       steering.x += ((sim.nest.x - this.x) / homeDistance) * 0.9;
       steering.z += ((sim.nest.z - this.z) / homeDistance) * 0.9;
     }
+  }
+
+  updateHarvest(dt, sim, steering) {
+    const food = sim.getFoodById(this.targetFoodId);
+    if (!food || food.amount <= 0.05) {
+      this.targetFoodId = null;
+      this.harvestTimer = 0;
+      this.setState("explore");
+      return;
+    }
+
+    const config = food.config ?? getFoodType(food.type);
+    const d = distance2(this.x, this.z, food.x, food.z) || 1;
+    const harvestRadius = food.radius + 1.6;
+    if (d > harvestRadius) {
+      steering.x += ((food.x - this.x) / d) * (1.65 + this.traits.persistence * 0.45);
+      steering.z += ((food.z - this.z) / d) * (1.65 + this.traits.persistence * 0.45);
+      if (d > config.detectRadius * 1.15) {
+        this.targetFoodId = null;
+        this.harvestTimer = 0;
+        this.setState("explore");
+      }
+      return;
+    }
+
+    const affinity = config.roleAffinity[this.role] ?? 1;
+    const harvestPower = affinity * (0.75 + this.traits.persistence * 0.5);
+    food.harvesterCount += 1;
+    food.harvestPower += harvestPower;
+    const helperCount = Math.max(food.lastHarvesterCount ?? 0, food.harvesterCount);
+    const requiredHelpers = config.requiredHelpers ?? 1;
+    const hasEnoughHelpers = !config.cooperative || helperCount >= requiredHelpers;
+
+    this.wander += (Math.random() - 0.5) * dt * 1.4;
+    steering.x += Math.sin(this.wander) * 0.08;
+    steering.z += Math.cos(this.wander) * 0.08;
+
+    if (!hasEnoughHelpers) {
+      this.harvestTimer = Math.max(0, this.harvestTimer - dt * 0.18);
+      if (this.lastTrail > 0.55) {
+        const waitStrength = PHEROMONE_PARAMS.foodBaseStrength * config.pheromoneStrength * 0.78;
+        sim.pheromones?.deposit("food", this.x, this.z, waitStrength, 4.2);
+        sim.pheromones?.deposit("trunk", this.x, this.z, waitStrength * config.trunkStrength, 5.0);
+        this.lastTrail = 0;
+      }
+      if (this.stateTime > 7 + this.traits.persistence * 5 && chance(dt * 0.35)) {
+        this.targetFoodId = null;
+        this.harvestTimer = 0;
+        this.setState("explore");
+      }
+      return;
+    }
+
+    const helperFactor = config.cooperative ? clamp(helperCount / requiredHelpers, 0.8, 1.7) : 1;
+    this.harvestTimer += dt * harvestPower * helperFactor;
+    if (this.harvestTimer < config.harvestTime) return;
+
+    const load = Math.min(config.loadSize, food.amount);
+    if (load <= 0.05) {
+      sim.refreshFoodMesh(food);
+      this.targetFoodId = null;
+      this.harvestTimer = 0;
+      this.setState("explore");
+      return;
+    }
+
+    this.carrying = load;
+    this.carryingLoad = load;
+    this.carryingFoodType = food.type;
+    this.carryingFoodValue = load * config.storageValue;
+    this.foodSourceId = food.id;
+    this.targetFoodId = null;
+    this.harvestTimer = 0;
+    food.amount -= load;
+    sim.refreshFoodMesh(food);
+    this.lastTrail = PHEROMONE_PARAMS.foodDepositInterval;
+    this.setState("return");
   }
 
   updateReturn(dt, sim, steering) {
@@ -1436,7 +1682,7 @@ class Ant3D {
     if (this.state === "searchNest") speed *= 0.9;
     if (this.state === "rescue") speed *= 0.92;
     if (this.state === "wet") speed *= 0.56;
-    if (this.carrying > 0) speed *= 0.75;
+    if (this.carrying > 0) speed *= getFoodType(this.carryingFoodType).carrySpeedMultiplier ?? 0.75;
     speed *= clamp(1 - this.wet * 0.3, 0.34, 1);
     speed *= sim.timeScale;
 
@@ -1460,16 +1706,25 @@ class Ant3D {
   leaveTrail(sim) {
     if ((this.state === "return" || this.state === "searchNest") && this.carrying > 0 && this.lastTrail > PHEROMONE_PARAMS.foodDepositInterval) {
       const source = sim.getFoodSource(this.foodSourceId);
+      const carriedConfig = getFoodType(this.carryingFoodType);
       if (source) {
         const sourceRatio = clamp(source.amount / source.initialAmount, 0, 1);
         const lowSourceFactor = clamp(sourceRatio / PHEROMONE_PARAMS.foodLowSourceThreshold, 0.18, 1);
-        const strength = (PHEROMONE_PARAMS.foodBaseStrength + sourceRatio * PHEROMONE_PARAMS.foodSourceStrengthBonus) * lowSourceFactor;
+        const sourceConfig = source.config ?? carriedConfig;
+        const strength =
+          (PHEROMONE_PARAMS.foodBaseStrength + sourceRatio * PHEROMONE_PARAMS.foodSourceStrengthBonus) *
+          sourceConfig.pheromoneStrength *
+          lowSourceFactor;
         sim.addTrail(this.x, this.z, "food", strength, {
           sourceId: this.foodSourceId,
           sourceRatio,
+          sourceType: source.type,
         });
         sim.pheromones?.deposit("food", this.x, this.z, strength, 3.0);
-        sim.pheromones?.deposit("trunk", this.x, this.z, strength * 0.08, 4.0);
+        sim.pheromones?.deposit("trunk", this.x, this.z, strength * sourceConfig.trunkStrength, 4.0);
+      } else {
+        const fallbackStrength = PHEROMONE_PARAMS.foodBaseStrength * carriedConfig.pheromoneStrength * 0.32;
+        sim.pheromones?.deposit("trunk", this.x, this.z, fallbackStrength * carriedConfig.trunkStrength, 4.0);
       }
       this.lastTrail = 0;
     } else if (this.state === "wet" && this.lastTrail > 0.6) {
@@ -1687,8 +1942,8 @@ class AntColony3D {
     this.currentPixelRatio = 1;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x181a18);
-    this.scene.fog = new THREE.Fog(0x181a18, 210, 420);
-    this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 460);
+    this.scene.fog = new THREE.Fog(0x181a18, 260, 560);
+    this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 660);
     this.renderer = this.createRenderer();
     if (!this.renderer) return;
     ui.world.appendChild(this.renderer.domElement);
@@ -1711,11 +1966,15 @@ class AntColony3D {
     this.tool = "inspect";
     this.paused = false;
     this.timeScale = 1;
-    this.worldRadius = 118;
-    this.nest = { x: -32, z: 9, radius: 12 };
+    this.worldRadius = 156;
+    this.fieldMargin = 14;
+    this.nest = { x: -42, z: 12, radius: 12 };
     this.selectedAnt = null;
     this.collectedFood = 0;
+    this.collectedByType = createFoodTypeTotals();
+    this.colonyStores = { energy: 0, storage: 0, brood: 0, material: 0 };
     this.nextFoodId = 1;
+    this.activeFoodType = ui.foodTypeSelect?.value ?? DEFAULT_FOOD_TYPE.id;
     this.ants = [];
     this.water = [];
     this.stones = [];
@@ -1856,8 +2115,16 @@ class AntColony3D {
       trailWater: new THREE.MeshBasicMaterial({ color: 0x55aee0, transparent: true, opacity: 0.18, depthWrite: false }),
     };
 
+    this.materials.foodByType = {
+      sugar: new THREE.MeshStandardMaterial({ color: FOOD_TYPES.sugar.color, roughness: 0.38, metalness: 0 }),
+      seed: new THREE.MeshStandardMaterial({ color: FOOD_TYPES.seed.color, roughness: 0.78, metalness: 0 }),
+      protein: new THREE.MeshStandardMaterial({ color: FOOD_TYPES.protein.color, roughness: 0.7, metalness: 0 }),
+      largePrey: new THREE.MeshStandardMaterial({ color: FOOD_TYPES.largePrey.color, roughness: 0.86, metalness: 0 }),
+    };
+
     this.materials.antByState = {
       explore: this.materials.antDefault,
+      harvest: new THREE.MeshStandardMaterial({ color: 0x2f2215, roughness: 0.74 }),
       return: new THREE.MeshStandardMaterial({ color: 0x2a1b0e, roughness: 0.72 }),
       searchNest: new THREE.MeshStandardMaterial({ color: 0x3a2614, roughness: 0.76 }),
       panic: new THREE.MeshStandardMaterial({ color: 0x7f241a, roughness: 0.7 }),
@@ -1871,28 +2138,30 @@ class AntColony3D {
       if (material && material.isMaterial) this.sharedMaterials.add(material);
     }
     for (const material of Object.values(this.materials.antByState)) this.sharedMaterials.add(material);
+    for (const material of Object.values(this.materials.foodByType)) this.sharedMaterials.add(material);
   }
 
   createWorld() {
     const hemi = new THREE.HemisphereLight(0xf8ead2, 0x21352e, 1.8);
     this.scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xffedc8, 2.2);
-    sun.position.set(-48, 88, 42);
+    sun.position.set(-64, 112, 58);
     sun.castShadow = this.quality.shadowQuality !== "off";
     if (sun.castShadow) {
       const mapSize = this.quality.shadowQuality === "medium" ? 1024 : 512;
+      const shadowExtent = this.worldRadius + 24;
       sun.shadow.mapSize.set(mapSize, mapSize);
-      sun.shadow.camera.left = -125;
-      sun.shadow.camera.right = 125;
-      sun.shadow.camera.top = 125;
-      sun.shadow.camera.bottom = -125;
+      sun.shadow.camera.left = -shadowExtent;
+      sun.shadow.camera.right = shadowExtent;
+      sun.shadow.camera.top = shadowExtent;
+      sun.shadow.camera.bottom = -shadowExtent;
       sun.shadow.camera.near = 20;
-      sun.shadow.camera.far = 240;
+      sun.shadow.camera.far = 340;
       sun.shadow.bias = -0.00015;
     }
     this.scene.add(sun);
 
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.worldRadius + 14, 192), this.materials.ground);
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.worldRadius + this.fieldMargin, 224), this.materials.ground);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.03;
     ground.receiveShadow = this.quality.shadowQuality !== "off";
@@ -1900,7 +2169,7 @@ class AntColony3D {
     this.sharedGeometries.add(ground.geometry);
 
     const rim = new THREE.Mesh(
-      new THREE.TorusGeometry(this.worldRadius + 2, 0.26, 8, 192),
+      new THREE.TorusGeometry(this.worldRadius + 2, 0.26, 8, 224),
       new THREE.MeshBasicMaterial({ color: 0x51412b, transparent: true, opacity: 0.46 }),
     );
     rim.rotation.x = Math.PI / 2;
@@ -1945,7 +2214,7 @@ class AntColony3D {
     ui.buttons.forEach((button) => {
       button.addEventListener("click", () => {
         this.tool = button.dataset.tool;
-        ui.activeToolLabel.textContent = button.dataset.label;
+        ui.activeToolLabel.textContent = this.tool === "food" ? `餌: ${getFoodType(this.activeFoodType).label}` : button.dataset.label;
         ui.buttons.forEach((item) => item.classList.toggle("active", item === button));
       });
     });
@@ -1972,6 +2241,12 @@ class AntColony3D {
     ui.intensity.addEventListener("input", () => {
       ui.intensityValue.value = ui.intensity.value;
     });
+    ui.foodTypeSelect?.addEventListener("change", () => {
+      this.activeFoodType = ui.foodTypeSelect.value;
+      this.updateFoodTypeHint();
+      if (this.tool === "food") ui.activeToolLabel.textContent = `餌: ${getFoodType(this.activeFoodType).label}`;
+    });
+    this.updateFoodTypeHint();
 
     const canvas = this.renderer.domElement;
     this.input = new InputManager(this, canvas);
@@ -1983,6 +2258,11 @@ class AntColony3D {
     ui.pheromone.title = label;
     ui.pheromone.setAttribute("aria-label", label);
     ui.pheromone.classList.toggle("is-active", mode !== "off");
+  }
+
+  updateFoodTypeHint() {
+    if (!ui.foodTypeHint) return;
+    ui.foodTypeHint.textContent = getFoodType(this.activeFoodType).hint;
   }
 
   reset() {
@@ -2000,6 +2280,8 @@ class AntColony3D {
     this.antRenderer?.beginFrame();
     this.antRenderer?.endFrame();
     this.collectedFood = 0;
+    this.collectedByType = createFoodTypeTotals();
+    this.colonyStores = { energy: 0, storage: 0, brood: 0, material: 0 };
     this.nextFoodId = 1;
     this.selectedAnt = null;
     const count = Number(ui.antCount.value);
@@ -2026,7 +2308,7 @@ class AntColony3D {
   }
 
   getDefaultCameraDistance() {
-    return window.innerWidth < 680 ? 226 : 214;
+    return window.innerWidth < 680 ? this.worldRadius * 1.85 : this.worldRadius * 1.74;
   }
 
   resize() {
@@ -2107,6 +2389,11 @@ class AntColony3D {
   }
 
   updateGame(dt) {
+    for (const food of this.food) {
+      food.harvesterCount = 0;
+      food.harvestPower = 0;
+    }
+
     for (const patch of this.water) {
       patch.age += dt;
       patch.power = Math.max(0.08, patch.power - dt * 0.014);
@@ -2156,6 +2443,10 @@ class AntColony3D {
 
     this.pheromones?.update(dt);
     for (const ant of this.ants) ant.update(dt, this);
+    for (const food of this.food) {
+      food.lastHarvesterCount = food.harvesterCount;
+      food.lastHarvestPower = food.harvestPower;
+    }
     this.lastUiUpdate += dt;
     if (this.lastUiUpdate > 0.15) {
       this.updateStats();
@@ -2245,7 +2536,11 @@ class AntColony3D {
     if (this.pointerMap.size === 2 && this.pinchStart) {
       const points = [...this.pointerMap.values()];
       const current = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 128, 310);
+      this.targetCameraDistance = clamp(
+        this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)),
+        128,
+        this.worldRadius * 2.7,
+      );
       return;
     }
 
@@ -2300,7 +2595,7 @@ class AntColony3D {
     const hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHit);
     if (!hit) return null;
     const d = Math.hypot(hit.x, hit.z);
-    if (d > this.worldRadius + 9) return null;
+    if (d > this.worldRadius + this.fieldMargin) return null;
     return { x: hit.x, z: hit.z };
   }
 
@@ -2429,16 +2724,51 @@ class AntColony3D {
 
   addFood(x, z) {
     const intensity = Number(ui.intensity.value);
-    const amount = 7 + intensity * 4;
+    const config = getFoodType(this.activeFoodType);
+    const amount = config.amountBase + intensity * config.amountPerIntensity;
+    const radius = config.radiusBase + intensity * config.radiusPerIntensity;
     const group = new THREE.Group();
-    const item = { id: this.nextFoodId, x, z, radius: 4.5 + intensity * 0.7, amount, initialAmount: amount, group, crumbs: [] };
+    const item = {
+      id: this.nextFoodId,
+      type: config.id,
+      config,
+      x,
+      z,
+      radius,
+      amount,
+      initialAmount: amount,
+      harvestProgress: 0,
+      harvesterCount: 0,
+      harvestPower: 0,
+      lastHarvesterCount: 0,
+      lastHarvestPower: 0,
+      group,
+      crumbs: [],
+    };
     this.nextFoodId += 1;
-    for (let i = 0; i < 18; i += 1) {
-      const crumb = new THREE.Mesh(this.geometries.foodCrumb, this.materials.food);
+    const crumbCount = config.id === "largePrey" ? 26 : config.id === "sugar" ? 16 : 18;
+    const material = this.materials.foodByType[config.id] ?? this.materials.food;
+    for (let i = 0; i < crumbCount; i += 1) {
+      const crumb = new THREE.Mesh(this.geometries.foodCrumb, material);
       const a = rand(0, Math.PI * 2);
-      const r = rand(0, item.radius);
-      crumb.position.set(Math.cos(a) * r, 0.52 + rand(0, 0.45), Math.sin(a) * r);
-      crumb.scale.setScalar(rand(0.26, 0.58));
+      const r = config.id === "largePrey" ? rand(0, item.radius * 0.92) : rand(0, item.radius);
+      crumb.position.set(Math.cos(a) * r, 0.48 + rand(0, config.id === "largePrey" ? 0.72 : 0.45), Math.sin(a) * r);
+      if (config.id === "sugar") {
+        const s = rand(0.24, 0.48);
+        crumb.scale.set(s * rand(0.9, 1.25), s * rand(0.42, 0.72), s * rand(0.9, 1.25));
+      } else if (config.id === "seed") {
+        const s = rand(0.34, 0.6);
+        crumb.scale.set(s * 0.72, s * 0.48, s * 1.28);
+        crumb.rotation.set(rand(-0.35, 0.35), rand(0, Math.PI), rand(-0.35, 0.35));
+      } else if (config.id === "protein") {
+        const s = rand(0.36, 0.68);
+        crumb.scale.set(s * rand(0.82, 1.25), s * rand(0.58, 0.95), s * rand(0.82, 1.2));
+        crumb.rotation.set(rand(-0.5, 0.5), rand(0, Math.PI), rand(-0.5, 0.5));
+      } else {
+        const s = rand(0.5, 0.96);
+        crumb.scale.set(s * rand(1.0, 1.55), s * rand(0.5, 0.86), s * rand(0.86, 1.42));
+        crumb.rotation.set(rand(-0.45, 0.45), rand(0, Math.PI), rand(-0.45, 0.45));
+      }
       crumb.castShadow = this.quality.shadowQuality !== "off";
       group.add(crumb);
       item.crumbs.push(crumb);
@@ -2449,6 +2779,11 @@ class AntColony3D {
     this.food.push(item);
   }
 
+  getFoodById(sourceId) {
+    if (sourceId == null) return null;
+    return this.food.find((item) => item.id === sourceId) ?? null;
+  }
+
   getFoodSource(sourceId) {
     if (sourceId == null) return null;
     return this.food.find((item) => item.id === sourceId && item.amount > 0.05) ?? null;
@@ -2456,8 +2791,11 @@ class AntColony3D {
 
   refreshFoodMesh(food) {
     const ratio = clamp(food.amount / food.initialAmount, 0, 1);
+    if (food.type === "sugar") food.group.scale.setScalar(0.72 + ratio * 0.28);
+    else food.group.scale.setScalar(0.9 + ratio * 0.1);
     food.crumbs.forEach((crumb, index) => {
-      crumb.visible = index / food.crumbs.length < ratio;
+      const visibilityCutoff = food.type === "largePrey" ? ratio : ratio * 1.05;
+      crumb.visible = index / food.crumbs.length < visibilityCutoff;
     });
     if (food.amount <= 0.05) {
       this.fadeFoodTrails(food.id);
@@ -2662,6 +3000,7 @@ class AntColony3D {
               : PHEROMONE_PARAMS.waterDecay,
       sourceId: options.sourceId ?? null,
       sourceRatio: options.sourceRatio ?? 1,
+      sourceType: options.sourceType ?? null,
       followStrength: kind === "food" ? clamp(options.sourceRatio ?? 1, 0, 1) : 1,
       mesh,
       scale,
@@ -2719,9 +3058,25 @@ class AntColony3D {
   updateInspector() {
     const ant = this.selectedAnt;
     if (!ant) {
-      ui.inspector.innerHTML = '<span class="muted">個体未選択</span>';
+      ui.inspector.innerHTML = `
+        <strong>コロニー貯蔵</strong>
+        <div class="trait-grid">
+          <span>エネルギー ${Math.floor(this.colonyStores.energy)}</span>
+          <span>貯蔵 ${Math.floor(this.colonyStores.storage)}</span>
+          <span>育児 ${Math.floor(this.colonyStores.brood)}</span>
+          <span>搬入 ${Math.floor(this.collectedFood)}</span>
+        </div>
+      `;
       return;
     }
+    const carryingConfig = ant.carrying > 0 ? getFoodType(ant.carryingFoodType) : null;
+    const targetFood = this.getFoodById(ant.targetFoodId);
+    const targetConfig = targetFood ? getFoodType(targetFood.type) : null;
+    const activity = carryingConfig
+      ? `運搬: ${carryingConfig.label}`
+      : targetConfig
+        ? `採取: ${targetConfig.label}`
+        : "運搬: なし";
     ui.inspector.innerHTML = `
       <strong>個体 ${ant.id} / ${ROLE_LABELS[ant.role]} / ${STATE_LABELS[ant.state]}</strong>
       <div class="trait-grid">
@@ -2729,6 +3084,8 @@ class AntColony3D {
         <span>警戒心 ${Math.round(ant.traits.caution * 100)}</span>
         <span>協調性 ${Math.round(ant.traits.social * 100)}</span>
         <span>粘り ${Math.round(ant.traits.persistence * 100)}</span>
+        <span>${activity}</span>
+        <span>経路誤差 ${ant.pathError.toFixed(1)}</span>
       </div>
     `;
   }

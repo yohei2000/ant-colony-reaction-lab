@@ -41,7 +41,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -455,10 +456,36 @@ input {
   accent-color: var(--accent);
 }
 
+.control-row select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.34);
+  color: var(--ink);
+  padding: 3px 6px;
+}
+
 .control-row output {
   color: var(--muted);
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.food-type-control {
+  grid-template-columns: 38px minmax(0, 1fr) 32px;
+}
+
+.food-type-control select {
+  grid-column: 2 / 4;
+}
+
+.food-type-hint {
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.67rem;
+  line-height: 1.25;
 }
 
 .toolbelt {
