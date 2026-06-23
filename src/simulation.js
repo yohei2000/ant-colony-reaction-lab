@@ -466,11 +466,11 @@ class DebugPanel {
 const PHEROMONE_FIELD_MODES = ["off", "food", "alarm", "avoid", "rescue", "all"];
 const PHEROMONE_FIELD_CHANNELS = ["food", "trunk", "alarm", "avoid", "rescue"];
 const PHEROMONE_FIELD_PARAMS = {
-  food: { decay: 0.16, diffusion: 0.025, color: [255, 172, 42], maxAlpha: 176 },
-  trunk: { decay: 0.018, diffusion: 0.01, color: [255, 225, 92], maxAlpha: 112 },
-  alarm: { decay: 0.45, diffusion: 0.035, color: [238, 68, 48], maxAlpha: 178 },
-  avoid: { decay: 0.2, diffusion: 0.025, color: [68, 190, 255], maxAlpha: 158 },
-  rescue: { decay: 0.22, diffusion: 0.025, color: [66, 218, 132], maxAlpha: 164 },
+  food: { decay: 0.16, diffusion: 0.025, color: [255, 178, 32], maxAlpha: 232 },
+  trunk: { decay: 0.018, diffusion: 0.01, color: [255, 230, 74], maxAlpha: 172 },
+  alarm: { decay: 0.45, diffusion: 0.035, color: [255, 58, 42], maxAlpha: 232 },
+  avoid: { decay: 0.2, diffusion: 0.025, color: [48, 196, 255], maxAlpha: 218 },
+  rescue: { decay: 0.22, diffusion: 0.025, color: [46, 230, 128], maxAlpha: 224 },
 };
 
 class PheromoneFieldSystem {
@@ -759,7 +759,7 @@ class PheromoneFieldSystem {
   channelAlpha(channel, value) {
     if (value <= 0.0005) return 0;
     const params = PHEROMONE_FIELD_PARAMS[channel];
-    return clamp(Math.pow(value / this.maxValue, 0.42) * params.maxAlpha, 0, params.maxAlpha);
+    return clamp(Math.pow(value / this.maxValue, 0.32) * params.maxAlpha, 0, params.maxAlpha);
   }
 
   writeSinglePixel(data, pixelIndex, fieldIndex, channel) {
@@ -776,7 +776,7 @@ class PheromoneFieldSystem {
   writeFoodPixel(data, pixelIndex, fieldIndex) {
     const foodAlpha = this.channelAlpha("food", this.fields.food[fieldIndex]);
     const trunkAlpha = this.channelAlpha("trunk", this.fields.trunk[fieldIndex]);
-    const totalAlpha = Math.min(198, foodAlpha + trunkAlpha * 0.82);
+    const totalAlpha = Math.min(242, foodAlpha + trunkAlpha * 0.9);
     if (totalAlpha <= 0) return;
     const foodColor = PHEROMONE_FIELD_PARAMS.food.color;
     const trunkColor = PHEROMONE_FIELD_PARAMS.trunk.color;
@@ -805,7 +805,7 @@ class PheromoneFieldSystem {
     data[pixelIndex] = red / alpha;
     data[pixelIndex + 1] = green / alpha;
     data[pixelIndex + 2] = blue / alpha;
-    data[pixelIndex + 3] = clamp(alpha, 0, 204);
+    data[pixelIndex + 3] = clamp(alpha, 0, 244);
   }
 }
 
