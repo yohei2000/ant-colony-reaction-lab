@@ -106,6 +106,7 @@ const ROLE_LABELS = {
 const STATE_LABELS = {
   explore: "探索",
   return: "帰巣",
+  searchNest: "巣探し",
   panic: "避難",
   wet: "乾燥",
   stunned: "停止",
@@ -133,6 +134,21 @@ const PHEROMONE_PARAMS = {
   alarmDecay: 0.32,
   rescueDecay: 0.14,
   waterDecay: 0.14,
+};
+
+const HOMING_PARAMS = {
+  pathAngularNoise: 0.018,
+  pathDistanceNoise: 0.035,
+  pathErrorGain: 0.0025,
+  pathErrorMax: 24,
+  pathResetRadiusMultiplier: 0.8,
+  returnGain: 1.05,
+  returnSearchDistance: 2.5,
+  nestOdorRadiusMultiplier: 2.8,
+  nestSearchOdorRadiusMultiplier: 3.2,
+  nestArriveRadiusMultiplier: 0.75,
+  searchFallbackDelay: 8,
+  searchGiveUpDelay: 18,
 };
 
 function closestPointOnSegment(px, pz, ax, az, bx, bz) {
@@ -446,6 +462,15 @@ class DebugPanel {
     if (this.elapsed < 0.5) return;
     const info = this.sim.renderer.info;
     this.frameMs = (this.elapsed / this.frames) * 1000;
+    let returnCount = 0;
+    let searchNestCount = 0;
+    let pathErrorSum = 0;
+    for (const ant of this.sim.ants) {
+      if (ant.state === "return") returnCount += 1;
+      else if (ant.state === "searchNest") searchNestCount += 1;
+      pathErrorSum += ant.pathError ?? 0;
+    }
+    const averagePathError = this.sim.ants.length > 0 ? pathErrorSum / this.sim.ants.length : 0;
     ui.debugMetrics.textContent = [
       `frame ${this.frameMs.toFixed(1)}ms`,
       `fps ${(1000 / this.frameMs).toFixed(0)}`,
@@ -456,6 +481,9 @@ class DebugPanel {
       `textures ${info.memory.textures}`,
       `ants ${this.sim.ants.length}`,
       `objects ${this.sim.water.length + this.sim.stones.length + this.sim.food.length + this.sim.branches.length}`,
+      `return ${returnCount}`,
+      `searchNest ${searchNestCount}`,
+      `pathError ${averagePathError.toFixed(1)}`,
       `pheromone ${this.sim.pheromones?.mode ?? "off"} ${this.sim.pheromones?.resolution ?? 0}`,
     ].join("\n");
     this.elapsed = 0;
@@ -871,6 +899,27 @@ class Ant3D {
       antennaAngle: 0.66,
       threshold: 0.012,
     };
+    this.returnTrunkAntennaeOptions = {
+      lookAhead: 5.6,
+      antennaAngle: 0.55,
+      threshold: 0.015,
+    };
+    this.returnFoodAntennaeOptions = {
+      lookAhead: 4.8,
+      antennaAngle: 0.52,
+      threshold: 0.025,
+    };
+    const nestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z);
+    const startsInNest = nestDistance < sim.nest.radius * HOMING_PARAMS.pathResetRadiusMultiplier;
+    this.pathX = startsInNest ? 0 : this.x - sim.nest.x;
+    this.pathZ = startsInNest ? 0 : this.z - sim.nest.z;
+    this.pathError = rand(0.2, 0.8);
+    this.homingConfidence = 1;
+    this.pathDrift = rand(-0.025, 0.025);
+    this.pathDistanceBias = rand(0.96, 1.04);
+    this.searchNestTime = 0;
+    this.nestFoundRecently = startsInNest;
+    this.homeEstimate = { x: 0, z: 0, distance: 0, confidence: 1 };
   }
 
   pickRole() {
@@ -937,6 +986,7 @@ class Ant3D {
     if (this.state === "panic") this.updatePanic(dt, sim, steering, sensed);
     else if (this.state === "wet") this.updateWet(dt, sim, steering);
     else if (this.state === "return") this.updateReturn(dt, sim, steering);
+    else if (this.state === "searchNest") this.updateSearchNest(dt, sim, steering);
     else if (this.state === "rescue") this.updateRescue(dt, sim, steering);
     else this.updateExplore(dt, sim, steering, sensed);
 
@@ -949,6 +999,104 @@ class Ant3D {
       this.state = nextState;
       this.stateTime = 0;
     }
+  }
+
+  updatePathIntegration(dx, dz, sim) {
+    const distance = Math.hypot(dx, dz);
+    if (distance < 0.0001 || this.state === "stunned") return;
+
+    const realNestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z);
+    if (realNestDistance < sim.nest.radius * HOMING_PARAMS.pathResetRadiusMultiplier) {
+      this.resetPathIntegration(sim);
+      return;
+    }
+
+    const angularNoise = rand(-HOMING_PARAMS.pathAngularNoise, HOMING_PARAMS.pathAngularNoise) + this.pathDrift * clamp(distance / 12, 0, 1.5);
+    const distanceScale = this.pathDistanceBias * (1 + rand(-HOMING_PARAMS.pathDistanceNoise, HOMING_PARAMS.pathDistanceNoise));
+    const sin = Math.sin(angularNoise);
+    const cos = Math.cos(angularNoise);
+    const estimatedDX = (dx * cos - dz * sin) * distanceScale;
+    const estimatedDZ = (dx * sin + dz * cos) * distanceScale;
+
+    this.pathX += estimatedDX;
+    this.pathZ += estimatedDZ;
+    this.pathError = clamp(
+      this.pathError + distance * HOMING_PARAMS.pathErrorGain * (1 + Math.abs(angularNoise) * 10),
+      0,
+      HOMING_PARAMS.pathErrorMax,
+    );
+    this.homingConfidence = clamp(1 - this.pathError / HOMING_PARAMS.pathErrorMax, 0.25, 1);
+  }
+
+  resetPathIntegration(sim) {
+    const realNestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z);
+    const insideNest = realNestDistance < sim.nest.radius * HOMING_PARAMS.pathResetRadiusMultiplier;
+    this.pathX = insideNest ? 0 : this.x - sim.nest.x;
+    this.pathZ = insideNest ? 0 : this.z - sim.nest.z;
+    this.pathError = rand(0.15, 0.6);
+    this.homingConfidence = 1;
+    this.searchNestTime = 0;
+    this.nestFoundRecently = insideNest;
+  }
+
+  getHomeEstimate() {
+    const distance = Math.hypot(this.pathX, this.pathZ);
+    const estimate = this.homeEstimate;
+    estimate.distance = distance;
+    estimate.confidence = this.homingConfidence;
+    if (distance < 0.001) {
+      estimate.x = 0;
+      estimate.z = 0;
+    } else {
+      estimate.x = -this.pathX / distance;
+      estimate.z = -this.pathZ / distance;
+    }
+    return estimate;
+  }
+
+  completeNestArrival(sim) {
+    if (this.carrying > 0) {
+      sim.collectedFood += this.carrying;
+      sim.pheromones?.deposit("trunk", this.x, this.z, 0.22, 5.5);
+    }
+    this.carrying = 0;
+    this.foodSourceId = null;
+    this.energy = 1;
+    this.homeTimer = 0;
+    this.resetPathIntegration(sim);
+    this.setState("explore");
+  }
+
+  addNestOdorSteering(sim, steering, radiusMultiplier, maxGain) {
+    const realNestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
+    const odorRadius = sim.nest.radius * radiusMultiplier;
+    if (realNestDistance >= odorRadius) return;
+    const gain = (1 - realNestDistance / odorRadius) * maxGain;
+    steering.x += ((sim.nest.x - this.x) / realNestDistance) * gain;
+    steering.z += ((sim.nest.z - this.z) / realNestDistance) * gain;
+  }
+
+  addReturnPheromoneBias(sim, steering) {
+    if (!sim.pheromones) return;
+    const trunk = sim.pheromones.sampleAntennae("trunk", this.x, this.z, this.angle, this.returnTrunkAntennaeOptions);
+    let bestStrength = trunk.strength;
+    let bestTurn = trunk.turn;
+    const food = sim.pheromones.sampleAntennae("food", this.x, this.z, this.angle, this.returnFoodAntennaeOptions);
+    if (food.strength > bestStrength) {
+      bestStrength = food.strength;
+      bestTurn = food.turn;
+    }
+
+    if (bestStrength > 0) {
+      const turnAngle = this.angle - bestTurn * 0.45;
+      const gain = clamp(bestStrength, 0, 0.65) * 0.28;
+      steering.x += Math.sin(turnAngle) * gain;
+      steering.z += Math.cos(turnAngle) * gain;
+    }
+
+    const avoidGradient = sim.pheromones.sampleGradient("avoid", this.x, this.z, this.fieldGradient);
+    steering.x -= avoidGradient.x * 0.45;
+    steering.z -= avoidGradient.z * 0.45;
   }
 
   sense(sim) {
@@ -1108,16 +1256,61 @@ class Ant3D {
   }
 
   updateReturn(dt, sim, steering) {
-    const d = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
-    steering.x += ((sim.nest.x - this.x) / d) * (1.55 + this.traits.persistence);
-    steering.z += ((sim.nest.z - this.z) / d) * (1.55 + this.traits.persistence);
+    const realNestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
+    if (realNestDistance < sim.nest.radius * HOMING_PARAMS.nestArriveRadiusMultiplier) {
+      this.completeNestArrival(sim);
+      return;
+    }
+
+    const home = this.getHomeEstimate();
+    if (home.distance > HOMING_PARAMS.returnSearchDistance) {
+      const gain =
+        HOMING_PARAMS.returnGain *
+        (1.05 + this.traits.persistence * 0.75) *
+        clamp(home.distance / 20, 0.35, 1.4) *
+        (0.72 + home.confidence * 0.28);
+      steering.x += home.x * gain;
+      steering.z += home.z * gain;
+    } else {
+      this.searchNestTime = 0;
+      this.setState("searchNest");
+      return;
+    }
+
+    this.wander += (Math.random() - 0.5) * dt * (1.2 + this.pathError * 0.06);
+    const wanderGain = clamp(this.pathError * 0.025, 0.04, 0.28);
+    steering.x += Math.sin(this.wander) * wanderGain;
+    steering.z += Math.cos(this.wander) * wanderGain;
+    this.addNestOdorSteering(sim, steering, HOMING_PARAMS.nestOdorRadiusMultiplier, 2.2);
+    this.addReturnPheromoneBias(sim, steering);
     this.energy = clamp(this.energy - dt * 0.024, 0, 1);
-    if (d < sim.nest.radius * 0.7) {
-      if (this.carrying > 0) sim.collectedFood += this.carrying;
-      this.carrying = 0;
-      this.foodSourceId = null;
-      this.energy = 1;
-      this.homeTimer = 0;
+  }
+
+  updateSearchNest(dt, sim, steering) {
+    this.searchNestTime += dt;
+    const realNestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
+    if (realNestDistance < sim.nest.radius * HOMING_PARAMS.nestArriveRadiusMultiplier) {
+      this.completeNestArrival(sim);
+      return;
+    }
+
+    this.wander += dt * (1.7 + this.traits.curiosity * 1.4) + Math.sin(this.searchNestTime * 1.3) * dt * 0.8;
+    const searchRadiusFactor = clamp(this.searchNestTime / 8, 0.2, 1.2);
+    steering.x += Math.sin(this.wander) * (0.65 + searchRadiusFactor * 0.35);
+    steering.z += Math.cos(this.wander) * (0.65 + searchRadiusFactor * 0.35);
+    this.addNestOdorSteering(sim, steering, HOMING_PARAMS.nestSearchOdorRadiusMultiplier, 2.8);
+    this.addReturnPheromoneBias(sim, steering);
+
+    if (this.searchNestTime > HOMING_PARAMS.searchFallbackDelay) {
+      const fallbackMax = this.carrying > 0 ? 0.85 : 0.55;
+      const fallbackGain = clamp((this.searchNestTime - HOMING_PARAMS.searchFallbackDelay) / 8, 0, fallbackMax);
+      steering.x += ((sim.nest.x - this.x) / realNestDistance) * fallbackGain;
+      steering.z += ((sim.nest.z - this.z) / realNestDistance) * fallbackGain;
+    }
+
+    this.energy = clamp(this.energy - dt * 0.02, 0, 1);
+    if (this.searchNestTime > HOMING_PARAMS.searchGiveUpDelay && this.carrying <= 0) {
+      this.resetPathIntegration(sim);
       this.setState("explore");
     }
   }
@@ -1226,6 +1419,8 @@ class Ant3D {
   }
 
   move(dt, sim, steering) {
+    const beforeX = this.x;
+    const beforeZ = this.z;
     const length = Math.hypot(steering.x, steering.z);
     if (length > 0.001) {
       const targetAngle = Math.atan2(steering.x, steering.z);
@@ -1238,6 +1433,7 @@ class Ant3D {
     let speed = this.baseSpeed;
     if (this.state === "panic") speed *= 1.42;
     if (this.state === "return") speed *= 1.08;
+    if (this.state === "searchNest") speed *= 0.9;
     if (this.state === "rescue") speed *= 0.92;
     if (this.state === "wet") speed *= 0.56;
     if (this.carrying > 0) speed *= 0.75;
@@ -1247,6 +1443,7 @@ class Ant3D {
     this.x += Math.sin(this.angle) * speed * dt;
     this.z += Math.cos(this.angle) * speed * dt;
     this.keepInWorld(sim);
+    this.updatePathIntegration(this.x - beforeX, this.z - beforeZ, sim);
   }
 
   keepInWorld(sim) {
@@ -1261,7 +1458,7 @@ class Ant3D {
   }
 
   leaveTrail(sim) {
-    if (this.state === "return" && this.carrying > 0 && this.lastTrail > PHEROMONE_PARAMS.foodDepositInterval) {
+    if ((this.state === "return" || this.state === "searchNest") && this.carrying > 0 && this.lastTrail > PHEROMONE_PARAMS.foodDepositInterval) {
       const source = sim.getFoodSource(this.foodSourceId);
       if (source) {
         const sourceRatio = clamp(source.amount / source.initialAmount, 0, 1);
@@ -1662,6 +1859,7 @@ class AntColony3D {
     this.materials.antByState = {
       explore: this.materials.antDefault,
       return: new THREE.MeshStandardMaterial({ color: 0x2a1b0e, roughness: 0.72 }),
+      searchNest: new THREE.MeshStandardMaterial({ color: 0x3a2614, roughness: 0.76 }),
       panic: new THREE.MeshStandardMaterial({ color: 0x7f241a, roughness: 0.7 }),
       wet: new THREE.MeshStandardMaterial({ color: 0x174b63, roughness: 0.64 }),
       stunned: new THREE.MeshStandardMaterial({ color: 0x5b6261, roughness: 0.82 }),
