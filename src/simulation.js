@@ -6,6 +6,7 @@ const ui = {
   activeToolLabel: document.querySelector("#activeToolLabel"),
   pause: document.querySelector("#pauseBtn"),
   reset: document.querySelector("#resetBtn"),
+  pheromone: document.querySelector("#pheromoneBtn"),
   antCount: document.querySelector("#antCount"),
   antCountValue: document.querySelector("#antCountValue"),
   intensity: document.querySelector("#intensity"),
@@ -455,9 +456,356 @@ class DebugPanel {
       `textures ${info.memory.textures}`,
       `ants ${this.sim.ants.length}`,
       `objects ${this.sim.water.length + this.sim.stones.length + this.sim.food.length + this.sim.branches.length}`,
+      `pheromone ${this.sim.pheromones?.mode ?? "off"} ${this.sim.pheromones?.resolution ?? 0}`,
     ].join("\n");
     this.elapsed = 0;
     this.frames = 0;
+  }
+}
+
+const PHEROMONE_FIELD_MODES = ["off", "food", "alarm", "avoid", "rescue", "all"];
+const PHEROMONE_FIELD_CHANNELS = ["food", "trunk", "alarm", "avoid", "rescue"];
+const PHEROMONE_FIELD_PARAMS = {
+  food: { decay: 0.16, diffusion: 0.025, color: [245, 166, 54], maxAlpha: 118 },
+  trunk: { decay: 0.018, diffusion: 0.01, color: [245, 218, 114], maxAlpha: 70 },
+  alarm: { decay: 0.45, diffusion: 0.035, color: [224, 78, 58], maxAlpha: 118 },
+  avoid: { decay: 0.2, diffusion: 0.025, color: [76, 184, 232], maxAlpha: 104 },
+  rescue: { decay: 0.22, diffusion: 0.025, color: [77, 201, 136], maxAlpha: 112 },
+};
+
+class PheromoneFieldSystem {
+  constructor(sim, options = {}) {
+    this.sim = sim;
+    this.resolution = options.resolution ?? 128;
+    this.fieldRadius = options.fieldRadius ?? sim.worldRadius + 8;
+    this.fieldSize = this.fieldRadius * 2;
+    this.cellSize = this.fieldSize / this.resolution;
+    this.invCellSize = 1 / this.cellSize;
+    this.maxValue = options.maxValue ?? 3;
+    this.fields = {};
+    this.scratch = {};
+    this.mode = "off";
+    this.dirty = true;
+    this.diffusionFrame = 0;
+    this.visualAccumulator = 0;
+    this.visualInterval = 0.1;
+    this.gridScratch = { gx: 0, gz: 0 };
+    this.gradientScratch = { x: 0, z: 0 };
+    this.antennaeScratch = { left: 0, right: 0, front: 0, peak: 0, turn: 0, strength: 0 };
+
+    const size = this.resolution * this.resolution;
+    for (const channel of PHEROMONE_FIELD_CHANNELS) {
+      this.fields[channel] = new Float32Array(size);
+      this.scratch[channel] = new Float32Array(size);
+    }
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = this.resolution;
+    this.canvas.height = this.resolution;
+    this.context = this.canvas.getContext("2d", { willReadFrequently: false });
+    this.imageData = this.context.createImageData(this.resolution, this.resolution);
+    this.texture = new THREE.CanvasTexture(this.canvas);
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.minFilter = THREE.LinearFilter;
+    this.texture.magFilter = THREE.LinearFilter;
+    this.texture.generateMipmaps = false;
+    this.geometry = new THREE.PlaneGeometry(this.fieldSize, this.fieldSize, 1, 1);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.DoubleSide,
+    });
+    this.overlay = new THREE.Mesh(this.geometry, this.material);
+    this.overlay.rotation.x = -Math.PI / 2;
+    this.overlay.position.y = 0.055;
+    this.overlay.renderOrder = 2;
+    this.overlay.visible = false;
+    this.overlay.matrixAutoUpdate = false;
+    this.overlay.updateMatrix();
+    sim.scene.add(this.overlay);
+  }
+
+  reset() {
+    for (const channel of PHEROMONE_FIELD_CHANNELS) this.fields[channel].fill(0);
+    this.dirty = true;
+    this.visualAccumulator = this.visualInterval;
+    this.updateVisualization(true);
+  }
+
+  dispose() {
+    if (this.overlay) this.sim.scene.remove(this.overlay);
+    this.geometry?.dispose();
+    this.material?.dispose();
+    this.texture?.dispose();
+    this.overlay = null;
+    this.geometry = null;
+    this.material = null;
+    this.texture = null;
+  }
+
+  update(dt) {
+    let changed = false;
+    for (const channel of PHEROMONE_FIELD_CHANNELS) {
+      const field = this.fields[channel];
+      const decayFactor = Math.exp(-PHEROMONE_FIELD_PARAMS[channel].decay * dt);
+      for (let i = 0; i < field.length; i += 1) {
+        const value = field[i];
+        if (value <= 0) continue;
+        const next = value * decayFactor;
+        field[i] = next < 0.0004 ? 0 : next;
+        changed = true;
+      }
+    }
+
+    this.diffusionFrame = (this.diffusionFrame + 1) % 3;
+    if (this.diffusionFrame === 0) {
+      for (const channel of PHEROMONE_FIELD_CHANNELS) {
+        this.diffuse(channel, PHEROMONE_FIELD_PARAMS[channel].diffusion);
+      }
+      changed = true;
+    }
+
+    if (changed) this.dirty = true;
+    if (this.mode === "off") return;
+    this.visualAccumulator += dt;
+    if (this.visualAccumulator >= this.visualInterval) {
+      this.updateVisualization();
+      this.visualAccumulator = 0;
+    }
+  }
+
+  diffuse(channel, amount) {
+    if (amount <= 0) return;
+    const field = this.fields[channel];
+    const scratch = this.scratch[channel];
+    const r = this.resolution;
+    const blend = clamp(amount, 0, 0.2);
+    const keep = 1 - blend;
+    scratch.set(field);
+    for (let z = 1; z < r - 1; z += 1) {
+      const row = z * r;
+      for (let x = 1; x < r - 1; x += 1) {
+        const i = row + x;
+        scratch[i] = field[i] * keep + (field[i - 1] + field[i + 1] + field[i - r] + field[i + r]) * blend * 0.25;
+      }
+    }
+    field.set(scratch);
+  }
+
+  worldToGrid(x, z, target = this.gridScratch) {
+    target.gx = (x + this.fieldRadius) * this.invCellSize - 0.5;
+    target.gz = (z + this.fieldRadius) * this.invCellSize - 0.5;
+    return target;
+  }
+
+  deposit(channel, x, z, strength, radius = 2.5) {
+    this.depositGaussian(channel, x, z, strength, radius);
+  }
+
+  dampen(channel, x, z, amount, radius) {
+    const field = this.fields[channel];
+    if (!field || amount <= 0 || radius <= 0) return;
+    const grid = this.worldToGrid(x, z);
+    const cellRadius = Math.ceil(radius * this.invCellSize) + 1;
+    const minX = clamp(Math.floor(grid.gx) - cellRadius, 0, this.resolution - 1);
+    const maxX = clamp(Math.floor(grid.gx) + cellRadius, 0, this.resolution - 1);
+    const minZ = clamp(Math.floor(grid.gz) - cellRadius, 0, this.resolution - 1);
+    const maxZ = clamp(Math.floor(grid.gz) + cellRadius, 0, this.resolution - 1);
+    const dampenAmount = clamp(amount, 0, 1);
+    for (let gz = minZ; gz <= maxZ; gz += 1) {
+      const wz = (gz + 0.5) * this.cellSize - this.fieldRadius;
+      const dz = wz - z;
+      const row = gz * this.resolution;
+      for (let gx = minX; gx <= maxX; gx += 1) {
+        const wx = (gx + 0.5) * this.cellSize - this.fieldRadius;
+        const dx = wx - x;
+        const distance = Math.hypot(dx, dz);
+        if (distance > radius) continue;
+        const falloff = (1 - distance / radius) ** 2;
+        const index = row + gx;
+        field[index] *= 1 - dampenAmount * falloff;
+      }
+    }
+    this.dirty = true;
+  }
+
+  depositGaussian(channel, x, z, strength, radius) {
+    const field = this.fields[channel];
+    if (!field || strength <= 0 || radius <= 0) return;
+    const grid = this.worldToGrid(x, z);
+    const cellRadius = Math.ceil(radius * this.invCellSize) + 1;
+    const minX = clamp(Math.floor(grid.gx) - cellRadius, 0, this.resolution - 1);
+    const maxX = clamp(Math.floor(grid.gx) + cellRadius, 0, this.resolution - 1);
+    const minZ = clamp(Math.floor(grid.gz) - cellRadius, 0, this.resolution - 1);
+    const maxZ = clamp(Math.floor(grid.gz) + cellRadius, 0, this.resolution - 1);
+    const sigma = Math.max(this.cellSize * 0.75, radius * 0.45);
+    const sigma2 = sigma * sigma;
+
+    for (let gz = minZ; gz <= maxZ; gz += 1) {
+      const wz = (gz + 0.5) * this.cellSize - this.fieldRadius;
+      const dz = wz - z;
+      const row = gz * this.resolution;
+      for (let gx = minX; gx <= maxX; gx += 1) {
+        const wx = (gx + 0.5) * this.cellSize - this.fieldRadius;
+        const dx = wx - x;
+        const dist2Value = dx * dx + dz * dz;
+        if (dist2Value > radius * radius) continue;
+        const falloff = Math.exp(-dist2Value / (2 * sigma2));
+        const index = row + gx;
+        field[index] = Math.min(this.maxValue, field[index] + strength * falloff);
+      }
+    }
+    this.dirty = true;
+  }
+
+  sample(channel, x, z) {
+    const field = this.fields[channel];
+    if (!field) return 0;
+    const grid = this.worldToGrid(x, z);
+    if (grid.gx < 0 || grid.gz < 0 || grid.gx > this.resolution - 1 || grid.gz > this.resolution - 1) return 0;
+    const x0 = clamp(Math.floor(grid.gx), 0, this.resolution - 2);
+    const z0 = clamp(Math.floor(grid.gz), 0, this.resolution - 2);
+    const tx = clamp(grid.gx - x0, 0, 1);
+    const tz = clamp(grid.gz - z0, 0, 1);
+    const row = z0 * this.resolution;
+    const i00 = row + x0;
+    const i10 = i00 + 1;
+    const i01 = i00 + this.resolution;
+    const i11 = i01 + 1;
+    const a = field[i00] * (1 - tx) + field[i10] * tx;
+    const b = field[i01] * (1 - tx) + field[i11] * tx;
+    return a * (1 - tz) + b * tz;
+  }
+
+  sampleGradient(channel, x, z, target = this.gradientScratch) {
+    const step = this.cellSize * 1.4;
+    target.x = (this.sample(channel, x + step, z) - this.sample(channel, x - step, z)) / (step * 2);
+    target.z = (this.sample(channel, x, z + step) - this.sample(channel, x, z - step)) / (step * 2);
+    return target;
+  }
+
+  sampleAntennae(channel, x, z, angle, options = null) {
+    const lookAhead = options?.lookAhead ?? 5.2;
+    const sideAngle = options?.antennaAngle ?? 0.65;
+    const threshold = options?.threshold ?? 0.025;
+    const fx = x + Math.sin(angle) * lookAhead;
+    const fz = z + Math.cos(angle) * lookAhead;
+    const la = angle + sideAngle;
+    const ra = angle - sideAngle;
+    const lx = x + Math.sin(la) * lookAhead;
+    const lz = z + Math.cos(la) * lookAhead;
+    const rx = x + Math.sin(ra) * lookAhead;
+    const rz = z + Math.cos(ra) * lookAhead;
+    const scratch = this.antennaeScratch;
+    scratch.left = this.sample(channel, lx, lz);
+    scratch.right = this.sample(channel, rx, rz);
+    scratch.front = this.sample(channel, fx, fz);
+    scratch.peak = Math.max(scratch.left, scratch.right, scratch.front);
+    scratch.turn = (scratch.right - scratch.left) / (scratch.left + scratch.right + 0.001);
+    scratch.strength = Math.max(0, scratch.peak - threshold);
+    return scratch;
+  }
+
+  setVisualizationMode(mode) {
+    this.mode = PHEROMONE_FIELD_MODES.includes(mode) ? mode : "off";
+    if (this.overlay) this.overlay.visible = this.mode !== "off";
+    this.dirty = true;
+    this.visualAccumulator = this.visualInterval;
+    this.updateVisualization(true);
+    return this.mode;
+  }
+
+  cycleVisualizationMode() {
+    const index = PHEROMONE_FIELD_MODES.indexOf(this.mode);
+    return this.setVisualizationMode(PHEROMONE_FIELD_MODES[(index + 1) % PHEROMONE_FIELD_MODES.length]);
+  }
+
+  updateVisualization(force = false) {
+    if (!this.overlay || !this.texture) return;
+    if (this.mode === "off") {
+      this.overlay.visible = false;
+      return;
+    }
+    if (!force && !this.dirty) return;
+    this.overlay.visible = true;
+    const data = this.imageData.data;
+    const r = this.resolution;
+    data.fill(0);
+
+    for (let y = 0; y < r; y += 1) {
+      const sourceRow = (r - 1 - y) * r;
+      const pixelRow = y * r * 4;
+      for (let x = 0; x < r; x += 1) {
+        const fieldIndex = sourceRow + x;
+        const pixelIndex = pixelRow + x * 4;
+        if (this.mode === "all") {
+          this.writeCombinedPixel(data, pixelIndex, fieldIndex);
+        } else if (this.mode === "food") {
+          this.writeFoodPixel(data, pixelIndex, fieldIndex);
+        } else {
+          this.writeSinglePixel(data, pixelIndex, fieldIndex, this.mode);
+        }
+      }
+    }
+
+    this.context.putImageData(this.imageData, 0, 0);
+    this.texture.needsUpdate = true;
+    this.dirty = false;
+  }
+
+  channelAlpha(channel, value) {
+    if (value <= 0.0005) return 0;
+    const params = PHEROMONE_FIELD_PARAMS[channel];
+    return clamp(Math.sqrt(value / this.maxValue) * params.maxAlpha, 0, params.maxAlpha);
+  }
+
+  writeSinglePixel(data, pixelIndex, fieldIndex, channel) {
+    const value = this.fields[channel]?.[fieldIndex] ?? 0;
+    const alpha = this.channelAlpha(channel, value);
+    if (alpha <= 0) return;
+    const color = PHEROMONE_FIELD_PARAMS[channel].color;
+    data[pixelIndex] = color[0];
+    data[pixelIndex + 1] = color[1];
+    data[pixelIndex + 2] = color[2];
+    data[pixelIndex + 3] = alpha;
+  }
+
+  writeFoodPixel(data, pixelIndex, fieldIndex) {
+    const foodAlpha = this.channelAlpha("food", this.fields.food[fieldIndex]);
+    const trunkAlpha = this.channelAlpha("trunk", this.fields.trunk[fieldIndex]);
+    const totalAlpha = Math.min(138, foodAlpha + trunkAlpha * 0.75);
+    if (totalAlpha <= 0) return;
+    const foodColor = PHEROMONE_FIELD_PARAMS.food.color;
+    const trunkColor = PHEROMONE_FIELD_PARAMS.trunk.color;
+    const denom = foodAlpha + trunkAlpha || 1;
+    data[pixelIndex] = (foodColor[0] * foodAlpha + trunkColor[0] * trunkAlpha) / denom;
+    data[pixelIndex + 1] = (foodColor[1] * foodAlpha + trunkColor[1] * trunkAlpha) / denom;
+    data[pixelIndex + 2] = (foodColor[2] * foodAlpha + trunkColor[2] * trunkAlpha) / denom;
+    data[pixelIndex + 3] = totalAlpha;
+  }
+
+  writeCombinedPixel(data, pixelIndex, fieldIndex) {
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    let alpha = 0;
+    for (const channel of PHEROMONE_FIELD_CHANNELS) {
+      const channelAlpha = this.channelAlpha(channel, this.fields[channel][fieldIndex]);
+      if (channelAlpha <= 0) continue;
+      const color = PHEROMONE_FIELD_PARAMS[channel].color;
+      red += color[0] * channelAlpha;
+      green += color[1] * channelAlpha;
+      blue += color[2] * channelAlpha;
+      alpha += channelAlpha;
+    }
+    if (alpha <= 0) return;
+    data[pixelIndex] = red / alpha;
+    data[pixelIndex + 1] = green / alpha;
+    data[pixelIndex + 2] = blue / alpha;
+    data[pixelIndex + 3] = clamp(alpha, 0, 146);
   }
 }
 
@@ -512,6 +860,17 @@ class Ant3D {
       this.traits.persistence = clamp(this.traits.persistence + 0.18, 0, 1);
     }
 
+    this.fieldGradient = { x: 0, z: 0 };
+    this.foodAntennaeOptions = {
+      lookAhead: 4.8 + this.traits.curiosity * 2.4,
+      antennaAngle: 0.58,
+      threshold: 0.018,
+    };
+    this.trunkAntennaeOptions = {
+      lookAhead: 7.2 + this.traits.social * 2.2,
+      antennaAngle: 0.66,
+      threshold: 0.012,
+    };
   }
 
   pickRole() {
@@ -647,6 +1006,26 @@ class Ant3D {
       }
     }
 
+    if (sim.pheromones) {
+      const alarm = sim.pheromones.sample("alarm", this.x, this.z);
+      if (alarm > 0.012) {
+        const gradient = sim.pheromones.sampleGradient("alarm", this.x, this.z, this.fieldGradient);
+        sensed.alarm = Math.max(sensed.alarm, alarm * 0.82);
+        const gain = clamp(alarm, 0, 1.4) * (4.8 + this.traits.caution * 2.4);
+        hazard.x -= gradient.x * gain;
+        hazard.z -= gradient.z * gain;
+      }
+
+      const avoid = sim.pheromones.sample("avoid", this.x, this.z);
+      if (avoid > 0.01) {
+        const gradient = sim.pheromones.sampleGradient("avoid", this.x, this.z, this.fieldGradient);
+        const gain = clamp(avoid, 0, 1.6) * (5.5 + this.traits.caution * 2.2);
+        hazard.x -= gradient.x * gain;
+        hazard.z -= gradient.z * gain;
+        if (avoid > 0.68) sensed.alarm = Math.max(sensed.alarm, avoid * 0.42);
+      }
+    }
+
     for (const food of sim.food) {
       if (food.amount <= 0) continue;
       const d = distance2(this.x, this.z, food.x, food.z);
@@ -676,11 +1055,34 @@ class Ant3D {
       steering.z += ((sensed.closestFood.z - this.z) / (sensed.foodDistance || 1)) * strength;
     }
 
+    if (sim.pheromones && this.role !== "guard") {
+      const foodSignal = sim.pheromones.sampleAntennae("food", this.x, this.z, this.angle, this.foodAntennaeOptions);
+      if (foodSignal.strength > 0) {
+        const turnAngle = this.angle - foodSignal.turn * 0.85;
+        const gain =
+          clamp(foodSignal.strength, 0, 1.2) *
+          PHEROMONE_PARAMS.foodFollowGain *
+          (0.75 + this.traits.curiosity * 0.65) *
+          (0.82 + this.traits.social * 0.28);
+        steering.x += Math.sin(turnAngle) * gain;
+        steering.z += Math.cos(turnAngle) * gain;
+      }
+
+      const trunkSignal = sim.pheromones.sampleAntennae("trunk", this.x, this.z, this.angle, this.trunkAntennaeOptions);
+      if (trunkSignal.strength > 0) {
+        const turnAngle = this.angle - trunkSignal.turn * 0.6;
+        const gain = clamp(trunkSignal.strength, 0, 0.75) * PHEROMONE_PARAMS.foodFollowGain * (0.18 + this.traits.social * 0.16);
+        steering.x += Math.sin(turnAngle) * gain;
+        steering.z += Math.cos(turnAngle) * gain;
+      }
+    }
+
+    const legacyTrailGain = sim.pheromones ? 0.16 : 1;
     for (const trail of sim.trails) {
       if (trail.kind !== "food") continue;
       const d = distance2(this.x, this.z, trail.x, trail.z);
       if (d < PHEROMONE_PARAMS.foodFollowRadius && trail.followStrength > 0) {
-        const strength = trail.life * trail.followStrength * (1 - d / PHEROMONE_PARAMS.foodFollowRadius) * PHEROMONE_PARAMS.foodFollowGain;
+        const strength = trail.life * trail.followStrength * (1 - d / PHEROMONE_PARAMS.foodFollowRadius) * PHEROMONE_PARAMS.foodFollowGain * legacyTrailGain;
         steering.x += ((trail.x - this.x) / (d || 1)) * strength;
         steering.z += ((trail.z - this.z) / (d || 1)) * strength;
       }
@@ -729,6 +1131,7 @@ class Ant3D {
     steering.z += ((sim.nest.z - this.z) / d) * this.traits.caution * 0.28;
     if (this.lastTrail > 0.28) {
       sim.addTrail(this.x, this.z, "alarm", 0.9);
+      sim.pheromones?.deposit("alarm", this.x, this.z, 0.82, 4.2);
       this.lastTrail = 0;
     }
     if (this.stateTime > 1.15 + this.traits.caution * 2.1 && sensed.waterDepth < 0.08) {
@@ -767,6 +1170,7 @@ class Ant3D {
       target.stun = Math.max(0, target.stun - dt * (0.42 + this.traits.social * 0.55));
       if (this.lastTrail > 0.38) {
         sim.addTrail(this.x, this.z, "rescue", 0.86);
+        sim.pheromones?.deposit("rescue", this.x, this.z, 0.72, 4.0);
         this.lastTrail = 0;
       }
     }
@@ -861,15 +1265,19 @@ class Ant3D {
       const source = sim.getFoodSource(this.foodSourceId);
       if (source) {
         const sourceRatio = clamp(source.amount / source.initialAmount, 0, 1);
-        const strength = PHEROMONE_PARAMS.foodBaseStrength + sourceRatio * PHEROMONE_PARAMS.foodSourceStrengthBonus;
+        const lowSourceFactor = clamp(sourceRatio / PHEROMONE_PARAMS.foodLowSourceThreshold, 0.18, 1);
+        const strength = (PHEROMONE_PARAMS.foodBaseStrength + sourceRatio * PHEROMONE_PARAMS.foodSourceStrengthBonus) * lowSourceFactor;
         sim.addTrail(this.x, this.z, "food", strength, {
           sourceId: this.foodSourceId,
           sourceRatio,
         });
+        sim.pheromones?.deposit("food", this.x, this.z, strength, 3.0);
+        sim.pheromones?.deposit("trunk", this.x, this.z, strength * 0.08, 4.0);
       }
       this.lastTrail = 0;
     } else if (this.state === "wet" && this.lastTrail > 0.6) {
       sim.addTrail(this.x, this.z, "water", 0.45);
+      sim.pheromones?.deposit("avoid", this.x, this.z, 0.28, 3.5);
       this.lastTrail = 0;
     }
   }
@@ -1138,6 +1546,7 @@ class AntColony3D {
     this.createSharedAssets();
     this.antRenderer = new AntRenderSystem(this, Number(ui.antCount.max));
     this.createWorld();
+    this.pheromones = new PheromoneFieldSystem(this);
     this.bindEvents();
     this.debugPanel = new DebugPanel(this);
     this.reset();
@@ -1351,6 +1760,13 @@ class AntColony3D {
     });
 
     ui.reset.addEventListener("click", () => this.reset());
+    ui.pheromone?.addEventListener("click", () => {
+      const mode = this.pheromones?.cycleVisualizationMode() ?? "off";
+      this.updatePheromoneButton(mode);
+      const activeTool = ui.buttons.find((button) => button.dataset.tool === this.tool);
+      ui.activeToolLabel.textContent = mode === "off" ? (activeTool?.dataset.label ?? "観察") : `フェロモン ${mode}`;
+    });
+    this.updatePheromoneButton();
     ui.antCount.addEventListener("input", () => {
       ui.antCountValue.value = ui.antCount.value;
     });
@@ -1361,6 +1777,14 @@ class AntColony3D {
 
     const canvas = this.renderer.domElement;
     this.input = new InputManager(this, canvas);
+  }
+
+  updatePheromoneButton(mode = this.pheromones?.mode ?? "off") {
+    if (!ui.pheromone) return;
+    const label = `フェロモン表示: ${mode}`;
+    ui.pheromone.title = label;
+    ui.pheromone.setAttribute("aria-label", label);
+    ui.pheromone.classList.toggle("is-active", mode !== "off");
   }
 
   reset() {
@@ -1374,6 +1798,7 @@ class AntColony3D {
     this.food = [];
     this.branches = [];
     this.trails = [];
+    this.pheromones?.reset();
     this.antRenderer?.beginFrame();
     this.antRenderer?.endFrame();
     this.collectedFood = 0;
@@ -1498,6 +1923,7 @@ class AntColony3D {
       for (const highlight of patch.highlights) {
         highlight.material.opacity = patch.power * highlight.userData.baseOpacity * (0.72 + Math.sin(patch.age * highlight.userData.speed + highlight.userData.offset) * 0.16);
       }
+      this.pheromones?.deposit("avoid", patch.x, patch.z, patch.power * dt * 0.5, patch.radius + 4);
     }
     this.water = this.water.filter((patch) => {
       if (patch.power > 0.09 && patch.age < 85) return true;
@@ -1526,6 +1952,7 @@ class AntColony3D {
       return false;
     });
 
+    this.pheromones?.update(dt);
     for (const ant of this.ants) ant.update(dt, this);
     this.lastUiUpdate += dt;
     if (this.lastUiUpdate > 0.15) {
@@ -1573,6 +2000,7 @@ class AntColony3D {
     for (const list of [this.water, this.stones, this.food, this.branches, this.trails]) {
       for (const item of list) this.disposeDynamicItem(item);
     }
+    this.pheromones?.dispose();
     this.assetService.dispose();
     for (const geometry of this.sharedGeometries) geometry.dispose();
     for (const material of this.sharedMaterials) disposeMaterial(material);
@@ -1763,6 +2191,8 @@ class AntColony3D {
     this.scene.add(group);
     this.dynamicObjects.add(group);
     this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring, shore, shadow, depth, ripples, highlights });
+    this.pheromones?.deposit("avoid", x, z, 0.9 + intensity * 0.12, radius + 5);
+    if (intensity >= 4) this.pheromones?.deposit("alarm", x, z, 0.22, radius + 3);
   }
 
   addStone(x, z) {
@@ -1787,6 +2217,8 @@ class AntColony3D {
 
     const item = { x, z, radius, shock: 1, group, ring };
     this.stones.push(item);
+    this.pheromones?.deposit("alarm", x, z, 0.84 + intensity * 0.12, radius + 10);
+    this.pheromones?.deposit("avoid", x, z, 0.48 + intensity * 0.08, radius + 7);
     for (const ant of this.ants) {
       const d = distance2(ant.x, ant.z, x, z);
       if (d < radius + 28) ant.shock((1 - d / (radius + 28)) * (0.78 + intensity * 0.13));
@@ -1827,6 +2259,9 @@ class AntColony3D {
     });
     if (food.amount <= 0.05) {
       this.fadeFoodTrails(food.id);
+      this.pheromones?.dampen("food", food.x, food.z, 0.72, food.radius + 12);
+      this.pheromones?.dampen("trunk", food.x, food.z, 0.42, food.radius + 16);
+      this.pheromones?.deposit("avoid", food.x, food.z, 0.48, food.radius + 6);
       this.disposeDynamicItem(food);
       this.food = this.food.filter((item) => item !== food);
     }
@@ -1838,6 +2273,8 @@ class AntColony3D {
       trail.followStrength = 0;
       trail.life = Math.min(trail.life, 0.18);
       trail.decay = PHEROMONE_PARAMS.foodDepletedDecay;
+      this.pheromones?.dampen("food", trail.x, trail.z, 0.55, 4.5);
+      this.pheromones?.dampen("trunk", trail.x, trail.z, 0.22, 5.5);
     }
   }
 
@@ -1979,7 +2416,12 @@ class AntColony3D {
     removeFrom(
       this.food,
       (item) => distance2(item.x, item.z, x, z) < radius + item.radius * 0.45,
-      (item) => this.fadeFoodTrails(item.id),
+      (item) => {
+        this.fadeFoodTrails(item.id);
+        this.pheromones?.dampen("food", item.x, item.z, 0.78, item.radius + 12);
+        this.pheromones?.dampen("trunk", item.x, item.z, 0.46, item.radius + 16);
+        this.pheromones?.deposit("avoid", item.x, item.z, 0.52, item.radius + 6);
+      },
     );
     removeFrom(this.branches, (item) => {
       const p = closestPointOnSegment(x, z, item.x1, item.z1, item.x2, item.z2);

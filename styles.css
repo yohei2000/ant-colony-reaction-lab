@@ -258,7 +258,8 @@ input {
 }
 
 .pause-icon,
-.reset-icon {
+.reset-icon,
+.pheromone-icon {
   position: relative;
   display: block;
   width: 18px;
@@ -317,6 +318,40 @@ input {
   border-top: 5px solid transparent;
   border-bottom: 5px solid transparent;
   transform: rotate(28deg);
+}
+
+.pheromone-button.is-active {
+  border-color: rgba(217, 166, 63, 0.72);
+  background: rgba(217, 166, 63, 0.16);
+  color: #f4ca62;
+}
+
+.pheromone-icon::before,
+.pheromone-icon::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+}
+
+.pheromone-icon::before {
+  left: 2px;
+  top: 2px;
+  width: 14px;
+  height: 14px;
+  background:
+    radial-gradient(circle at 35% 35%, rgba(255, 231, 112, 0.95) 0 3px, transparent 4px),
+    radial-gradient(circle at 68% 60%, rgba(217, 111, 88, 0.88) 0 2px, transparent 3px),
+    radial-gradient(circle at 48% 75%, rgba(81, 183, 166, 0.82) 0 2px, transparent 3px);
+  box-shadow: 0 0 10px rgba(217, 166, 63, 0.55);
+}
+
+.pheromone-icon::after {
+  left: 6px;
+  top: 6px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  opacity: 0.65;
 }
 
 .stats-strip {
@@ -599,7 +634,7 @@ input {
 
 @media (max-width: 420px) {
   .title-block {
-    max-width: calc(100vw - 118px);
+    max-width: calc(100vw - 184px);
   }
 
   .title-block strong {
