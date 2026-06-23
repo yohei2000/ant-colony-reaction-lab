@@ -154,6 +154,15 @@ const HOMING_PARAMS = {
   searchGiveUpDelay: 18,
 };
 
+const ANT_FORMATION_PARAMS = {
+  hardRadius: 0.82,
+  personalRadius: 2.05,
+  sameDirectionRadius: 5.2,
+  laneWidth: 1.15,
+  sideBySideForwardRange: 1.85,
+  followGap: 3.05,
+};
+
 const FOOD_TYPES = {
   sugar: {
     id: "sugar",
@@ -625,6 +634,7 @@ class PheromoneFieldSystem {
     this.sim = sim;
     this.resolution = options.resolution ?? (sim.worldRadius > 140 ? 160 : 128);
     this.fieldRadius = options.fieldRadius ?? sim.worldRadius + (sim.fieldMargin ?? 12);
+    this.visualRadius = options.visualRadius ?? sim.worldRadius;
     this.fieldSize = this.fieldRadius * 2;
     this.cellSize = this.fieldSize / this.resolution;
     this.invCellSize = 1 / this.cellSize;
@@ -653,6 +663,7 @@ class PheromoneFieldSystem {
     this.imageData = this.context.createImageData(this.resolution, this.resolution);
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.flipY = true;
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.generateMipmaps = false;
@@ -882,10 +893,14 @@ class PheromoneFieldSystem {
     const r = this.resolution;
     data.fill(0);
 
+    const visualRadius2 = this.visualRadius * this.visualRadius;
     for (let y = 0; y < r; y += 1) {
-      const sourceRow = (r - 1 - y) * r;
+      const sourceRow = y * r;
       const pixelRow = y * r * 4;
+      const wz = (y + 0.5) * this.cellSize - this.fieldRadius;
       for (let x = 0; x < r; x += 1) {
+        const wx = (x + 0.5) * this.cellSize - this.fieldRadius;
+        if (wx * wx + wz * wz > visualRadius2) continue;
         const fieldIndex = sourceRow + x;
         const pixelIndex = pixelRow + x * 4;
         if (this.mode === "all") {
@@ -1623,18 +1638,79 @@ class Ant3D {
     let sx = 0;
     let sz = 0;
     let count = 0;
+    const forwardX = Math.sin(this.angle);
+    const forwardZ = Math.cos(this.angle);
+    const rightX = Math.cos(this.angle);
+    const rightZ = -Math.sin(this.angle);
+    const orderlyState = this.state === "explore" || this.state === "harvest" || this.state === "return" || this.state === "searchNest";
     for (const other of sim.ants) {
       if (other === this) continue;
       const d = distance2(this.x, this.z, other.x, other.z);
-      if (d > 0 && d < 2.2) {
-        sx += (this.x - other.x) / d;
-        sz += (this.z - other.z) / d;
+      if (d <= 0 || d > ANT_FORMATION_PARAMS.sameDirectionRadius) continue;
+
+      const awayX = (this.x - other.x) / d;
+      const awayZ = (this.z - other.z) / d;
+      const otherForwardX = Math.sin(other.angle);
+      const otherForwardZ = Math.cos(other.angle);
+      const headingSimilarity = forwardX * otherForwardX + forwardZ * otherForwardZ;
+      const sameDirection =
+        orderlyState &&
+        (other.state === "explore" || other.state === "harvest" || other.state === "return" || other.state === "searchNest") &&
+        headingSimilarity > 0.55;
+
+      if (d < ANT_FORMATION_PARAMS.hardRadius) {
+        const strength = (1 - d / ANT_FORMATION_PARAMS.hardRadius) * 1.05;
+        sx += awayX * strength;
+        sz += awayZ * strength;
+        count += 1;
+        continue;
+      }
+
+      if (!sameDirection) {
+        if (d < ANT_FORMATION_PARAMS.personalRadius) {
+          const strength = (1 - d / ANT_FORMATION_PARAMS.personalRadius) * 0.54;
+          sx += awayX * strength;
+          sz += awayZ * strength;
+          count += 1;
+        }
+        continue;
+      }
+
+      const toOtherX = other.x - this.x;
+      const toOtherZ = other.z - this.z;
+      const forwardOffset = toOtherX * forwardX + toOtherZ * forwardZ;
+      const lateralOffset = toOtherX * rightX + toOtherZ * rightZ;
+      const absForward = Math.abs(forwardOffset);
+      const absLateral = Math.abs(lateralOffset);
+
+      if (forwardOffset > 0 && forwardOffset < ANT_FORMATION_PARAMS.followGap && absLateral < ANT_FORMATION_PARAMS.laneWidth) {
+        const strength = (1 - forwardOffset / ANT_FORMATION_PARAMS.followGap) * (1 - absLateral / ANT_FORMATION_PARAMS.laneWidth) * 0.48;
+        sx -= forwardX * strength;
+        sz -= forwardZ * strength;
+        count += 1;
+      } else if (
+        absForward < ANT_FORMATION_PARAMS.sideBySideForwardRange &&
+        absLateral > ANT_FORMATION_PARAMS.laneWidth &&
+        absLateral < ANT_FORMATION_PARAMS.personalRadius + 1.35
+      ) {
+        const sideSign = lateralOffset >= 0 ? 1 : -1;
+        const orderSign = this.id > other.id ? -1 : 1;
+        const sideBySideStrength =
+          (1 - absForward / ANT_FORMATION_PARAMS.sideBySideForwardRange) *
+          (1 - (absLateral - ANT_FORMATION_PARAMS.laneWidth) / (ANT_FORMATION_PARAMS.personalRadius + 1.35 - ANT_FORMATION_PARAMS.laneWidth));
+        sx += rightX * sideSign * sideBySideStrength * 0.18 + forwardX * orderSign * sideBySideStrength * 0.34;
+        sz += rightZ * sideSign * sideBySideStrength * 0.18 + forwardZ * orderSign * sideBySideStrength * 0.34;
+        count += 1;
+      } else if (d < ANT_FORMATION_PARAMS.personalRadius) {
+        const strength = (1 - d / ANT_FORMATION_PARAMS.personalRadius) * 0.24;
+        sx += awayX * strength;
+        sz += awayZ * strength;
         count += 1;
       }
     }
     if (count) {
-      steering.x += (sx / count) * 0.52;
-      steering.z += (sz / count) * 0.52;
+      steering.x += sx / count;
+      steering.z += sz / count;
     }
   }
 
