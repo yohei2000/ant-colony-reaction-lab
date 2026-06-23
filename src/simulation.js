@@ -1687,8 +1687,8 @@ class AntColony3D {
     this.currentPixelRatio = 1;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x181a18);
-    this.scene.fog = new THREE.Fog(0x181a18, 145, 285);
-    this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 320);
+    this.scene.fog = new THREE.Fog(0x181a18, 210, 420);
+    this.camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 460);
     this.renderer = this.createRenderer();
     if (!this.renderer) return;
     ui.world.appendChild(this.renderer.domElement);
@@ -1711,8 +1711,8 @@ class AntColony3D {
     this.tool = "inspect";
     this.paused = false;
     this.timeScale = 1;
-    this.worldRadius = 82;
-    this.nest = { x: -22, z: 7, radius: 12 };
+    this.worldRadius = 118;
+    this.nest = { x: -32, z: 9, radius: 12 };
     this.selectedAnt = null;
     this.collectedFood = 0;
     this.nextFoodId = 1;
@@ -1732,7 +1732,7 @@ class AntColony3D {
     this.cameraPitch = 1.05;
     this.targetCameraYaw = this.cameraYaw;
     this.targetCameraPitch = this.cameraPitch;
-    this.cameraDistance = window.innerWidth < 680 ? 174 : 162;
+    this.cameraDistance = this.getDefaultCameraDistance();
     this.targetCameraDistance = this.cameraDistance;
 
     this.sharedGeometries = new Set();
@@ -1882,17 +1882,17 @@ class AntColony3D {
     if (sun.castShadow) {
       const mapSize = this.quality.shadowQuality === "medium" ? 1024 : 512;
       sun.shadow.mapSize.set(mapSize, mapSize);
-      sun.shadow.camera.left = -70;
-      sun.shadow.camera.right = 70;
-      sun.shadow.camera.top = 70;
-      sun.shadow.camera.bottom = -70;
+      sun.shadow.camera.left = -125;
+      sun.shadow.camera.right = 125;
+      sun.shadow.camera.top = 125;
+      sun.shadow.camera.bottom = -125;
       sun.shadow.camera.near = 20;
-      sun.shadow.camera.far = 180;
+      sun.shadow.camera.far = 240;
       sun.shadow.bias = -0.00015;
     }
     this.scene.add(sun);
 
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.worldRadius + 12, 144), this.materials.ground);
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.worldRadius + 14, 192), this.materials.ground);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.03;
     ground.receiveShadow = this.quality.shadowQuality !== "off";
@@ -1900,7 +1900,7 @@ class AntColony3D {
     this.sharedGeometries.add(ground.geometry);
 
     const rim = new THREE.Mesh(
-      new THREE.TorusGeometry(this.worldRadius + 2, 0.26, 8, 160),
+      new THREE.TorusGeometry(this.worldRadius + 2, 0.26, 8, 192),
       new THREE.MeshBasicMaterial({ color: 0x51412b, transparent: true, opacity: 0.46 }),
     );
     rim.rotation.x = Math.PI / 2;
@@ -2025,6 +2025,10 @@ class AntColony3D {
     }
   }
 
+  getDefaultCameraDistance() {
+    return window.innerWidth < 680 ? 226 : 214;
+  }
+
   resize() {
     const width = window.innerWidth;
     const height = window.innerHeight;
@@ -2036,7 +2040,7 @@ class AntColony3D {
     this.currentPixelRatio = Math.min((window.devicePixelRatio || 1) * this.quality.resolutionScale, this.quality.maxPixelRatio);
     this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.setSize(width, height, false);
-    this.cameraDistance = width < 680 ? 174 : 162;
+    this.cameraDistance = this.getDefaultCameraDistance();
     this.targetCameraDistance = this.cameraDistance;
     this.updateCamera();
   }
@@ -2241,7 +2245,7 @@ class AntColony3D {
     if (this.pointerMap.size === 2 && this.pinchStart) {
       const points = [...this.pointerMap.values()];
       const current = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 96, 230);
+      this.targetCameraDistance = clamp(this.pinchStart.cameraDistance * (this.pinchStart.distance / (current || 1)), 128, 310);
       return;
     }
 
@@ -2296,7 +2300,7 @@ class AntColony3D {
     const hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHit);
     if (!hit) return null;
     const d = Math.hypot(hit.x, hit.z);
-    if (d > this.worldRadius + 7) return null;
+    if (d > this.worldRadius + 9) return null;
     return { x: hit.x, z: hit.z };
   }
 
