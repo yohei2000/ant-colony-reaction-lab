@@ -4,6 +4,8 @@ const ui = {
   world: document.querySelector("#world3d"),
   buttons: [...document.querySelectorAll(".tool-button")],
   activeToolLabel: document.querySelector("#activeToolLabel"),
+  appShell: document.querySelector(".app-shell"),
+  uiToggle: document.querySelector("#uiToggleBtn"),
   pause: document.querySelector("#pauseBtn"),
   reset: document.querySelector("#resetBtn"),
   pheromone: document.querySelector("#pheromoneBtn"),
@@ -3632,6 +3634,7 @@ class AntColony3D {
     this.dragMoved = false;
 
     this.tool = "inspect";
+    this.uiCollapsed = readStorage("ant3d.uiCollapsed") === "1";
     this.paused = false;
     this.timeScale = 1;
     this.worldRadius = 170;
@@ -3681,6 +3684,7 @@ class AntColony3D {
     this.antRenderer = new AntRenderSystem(this, Number(ui.antCount.max));
     this.createWorld();
     this.pheromones = new PheromoneFieldSystem(this);
+    this.setUiCollapsed(this.uiCollapsed, false);
     this.bindEvents();
     this.debugPanel = new DebugPanel(this);
     this.reset();
@@ -3913,6 +3917,8 @@ class AntColony3D {
       });
     });
 
+    ui.uiToggle?.addEventListener("click", () => this.setUiCollapsed(!this.uiCollapsed));
+
     ui.pause.addEventListener("click", () => {
       this.paused = !this.paused;
       ui.pause.classList.toggle("is-paused", this.paused);
@@ -3967,6 +3973,19 @@ class AntColony3D {
 
     const canvas = this.renderer.domElement;
     this.input = new InputManager(this, canvas);
+  }
+
+  setUiCollapsed(collapsed, persist = true) {
+    this.uiCollapsed = Boolean(collapsed);
+    ui.appShell?.classList.toggle("ui-collapsed", this.uiCollapsed);
+    if (ui.uiToggle) {
+      const label = this.uiCollapsed ? "操作UIを表示" : "操作UIを隠す";
+      ui.uiToggle.title = label;
+      ui.uiToggle.setAttribute("aria-label", label);
+      ui.uiToggle.setAttribute("aria-pressed", String(this.uiCollapsed));
+      ui.uiToggle.classList.toggle("is-hidden-mode", this.uiCollapsed);
+    }
+    if (persist) writeStorage("ant3d.uiCollapsed", this.uiCollapsed ? "1" : "0");
   }
 
   updatePheromoneButton(mode = this.pheromones?.mode ?? "off") {

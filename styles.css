@@ -260,6 +260,7 @@ select {
 
 .pause-icon,
 .reset-icon,
+.ui-toggle-icon,
 .pheromone-icon {
   position: relative;
   display: block;
@@ -299,6 +300,40 @@ select {
 
 .icon-button.is-paused .pause-icon::after {
   display: none;
+}
+
+.ui-toggle-icon::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 4px;
+  width: 16px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.ui-toggle-icon::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 1px currentColor;
+}
+
+.ui-toggle-button.is-hidden-mode .ui-toggle-icon::after {
+  left: 2px;
+  top: 8px;
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: none;
+  transform: rotate(-38deg);
 }
 
 .reset-icon::before {
@@ -567,6 +602,33 @@ select {
   transform: translateY(1px);
 }
 
+.app-shell.ui-collapsed .title-block,
+.app-shell.ui-collapsed .stats-strip,
+.app-shell.ui-collapsed .inspector-panel,
+.app-shell.ui-collapsed .toolbelt {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.app-shell.ui-collapsed .quick-actions .icon-button:not(.ui-toggle-button) {
+  display: none;
+}
+
+.app-shell.ui-collapsed .topbar {
+  justify-content: flex-end;
+}
+
+.app-shell.ui-collapsed .quick-actions {
+  gap: 0;
+}
+
+.app-shell.ui-collapsed .ui-toggle-button {
+  border-color: rgba(81, 183, 166, 0.7);
+  background: rgba(22, 24, 23, 0.72);
+  color: #d8fff7;
+}
+
 .tool-icon {
   position: relative;
   display: block;
@@ -695,7 +757,16 @@ select {
 
 @media (max-width: 420px) {
   .title-block {
-    max-width: calc(100vw - 184px);
+    max-width: calc(100vw - 220px);
+  }
+
+  .quick-actions {
+    gap: 5px;
+  }
+
+  .icon-button {
+    width: 40px;
+    height: 40px;
   }
 
   .title-block strong {
