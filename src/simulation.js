@@ -1119,6 +1119,58 @@ function makeIrregularDiscGeometry(segments = 72, jitter = 0.12) {
   return new THREE.ShapeGeometry(shape);
 }
 
+function createCurledLeafGeometry(width = 0.92, length = 0.38, widthSegments = 7, lengthSegments = 3) {
+  const geometry = new THREE.PlaneGeometry(width, length, widthSegments, lengthSegments);
+  const position = geometry.attributes.position;
+  const halfWidth = width * 0.5;
+  const halfLength = length * 0.5;
+  for (let i = 0; i < position.count; i += 1) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const along = Math.abs(x) / halfWidth;
+    const across = Math.abs(y) / halfLength;
+    const taper = clamp(1 - along * 0.58, 0.34, 1);
+    const centerLift = Math.sin((x / width + 0.5) * Math.PI) * 0.055;
+    const curledEdge = across * across * (0.045 + along * 0.035);
+    const midrib = (1 - across) * 0.022;
+    position.setY(i, y * taper);
+    position.setZ(i, centerLift + curledEdge + midrib);
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createBarkShardGeometry() {
+  const geometry = new THREE.BufferGeometry();
+  const vertices = new Float32Array([
+    -0.52, -0.055, -0.19,
+    0.5, -0.06, -0.16,
+    0.47, -0.045, 0.18,
+    -0.48, -0.05, 0.15,
+    -0.45, 0.045, -0.16,
+    0.52, 0.075, -0.13,
+    0.41, 0.12, 0.16,
+    -0.53, 0.07, 0.12,
+  ]);
+  geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+  geometry.setIndex([
+    0, 2, 1,
+    0, 3, 2,
+    4, 5, 6,
+    4, 6, 7,
+    0, 1, 5,
+    0, 5, 4,
+    1, 2, 6,
+    1, 6, 5,
+    2, 3, 7,
+    2, 7, 6,
+    3, 0, 4,
+    3, 4, 7,
+  ]);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function createCylinderBetween(start, end, radiusTop, radiusBottom, material, radialSegments = 12) {
   const direction = end.clone().sub(start);
   const length = direction.length();
@@ -1750,12 +1802,14 @@ class TerrainSystem {
 
   addProps() {
     const density = (this.complexity === "high" ? 1.9 : this.complexity === "low" ? 0.42 : 1) * this.sim.quality.effectsQuality;
-    this.addInstancedProps("grassTuft", "grass", Math.round(420 * density), new THREE.ConeGeometry(0.08, 0.7, 4, 1), new THREE.MeshStandardMaterial({ color: 0x547d3d, roughness: 0.92 }), { yOffset: 0.28, minScale: 0.65, maxScale: 1.28, upright: true, tilt: 0.28 });
-    this.addInstancedProps("leafFlake", "leafLitter", Math.round(280 * density), new THREE.PlaneGeometry(0.7, 0.26), new THREE.MeshStandardMaterial({ color: 0x8b5a28, roughness: 0.88, side: THREE.DoubleSide }), { yOffset: 0.075, minScale: 0.62, maxScale: 1.45, flat: true, stretchX: 1.45, stretchZ: 0.82 });
+    this.addInstancedProps("grassTuft", "grass", Math.round(420 * density), new THREE.ConeGeometry(0.08, 0.7, 4, 1), new THREE.MeshStandardMaterial({ color: 0x547d3d, roughness: 0.92 }), { yOffset: 0.28, minScale: 0.65, maxScale: 1.28, upright: true, tilt: 0.28, colorJitter: 0.05 });
+    this.addInstancedProps("leafFlake", "leafLitter", Math.round(300 * density), createCurledLeafGeometry(), new THREE.MeshStandardMaterial({ color: 0x9a612a, roughness: 0.9, side: THREE.DoubleSide }), { yOffset: 0.12, minScale: 0.68, maxScale: 1.52, flat: true, tilt: 0.46, stretchX: 1.36, stretchZ: 0.96, colorJitter: 0.12 });
     this.addInstancedProps("pebble", "gravel", Math.round(250 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x85867e, roughness: 0.94 }), { yOffset: 0.08, minScale: 0.62, maxScale: 1.55, tumble: true, stretchY: 0.58 });
     this.addRootProps(Math.round(76 * density), Math.round(28 * density));
-    this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(86 * density), new THREE.BoxGeometry(0.08, 0.06, 1.15), new THREE.MeshStandardMaterial({ color: 0x5f3b1d, roughness: 0.94 }), { yOffset: 0.09, minScale: 0.65, maxScale: 1.42, lowShard: true, stretchZ: 1.4 });
-    this.addInstancedProps("barkChip", ["root", "leafLitter"], Math.round(74 * density), new THREE.BoxGeometry(0.44, 0.05, 0.18), new THREE.MeshStandardMaterial({ color: 0x70411e, roughness: 0.96 }), { yOffset: 0.11, minScale: 0.62, maxScale: 1.35, lowShard: true, stretchX: 1.25 });
+    this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(118 * density), new THREE.CylinderGeometry(0.045, 0.072, 1.15, 7, 1), new THREE.MeshStandardMaterial({ color: 0x5f3b1d, roughness: 0.94 }), { yOffset: 0.14, minScale: 0.66, maxScale: 1.45, layCylinder: true, liftVariance: 0.12, stretchY: 1.58, stretchX: 0.92, stretchZ: 0.92, colorJitter: 0.08 });
+    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(70 * density), createCurledLeafGeometry(1.55, 0.72, 9, 3), new THREE.MeshStandardMaterial({ color: 0xa56a2f, roughness: 0.88, side: THREE.DoubleSide }), { yOffset: 0.16, minScale: 0.72, maxScale: 1.55, flat: true, tilt: 0.62, stretchX: 1.18, stretchZ: 0.98, colorJitter: 0.16, castShadow: true });
+    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(46 * density), new THREE.CylinderGeometry(0.07, 0.1, 2.1, 7, 1), new THREE.MeshStandardMaterial({ color: 0x63401f, roughness: 0.95 }), { yOffset: 0.2, minScale: 0.72, maxScale: 1.35, layCylinder: true, liftVariance: 0.1, stretchY: 1.48, stretchX: 0.92, stretchZ: 0.92, colorJitter: 0.08, castShadow: true });
+    this.addInstancedProps("barkChip", ["root", "leafLitter"], Math.round(84 * density), createBarkShardGeometry(), new THREE.MeshStandardMaterial({ color: 0x70411e, roughness: 0.96, flatShading: true }), { yOffset: 0.13, minScale: 0.66, maxScale: 1.38, lowShard: true, tilt: 0.48, stretchX: 1.22, stretchY: 1.08, stretchZ: 0.94, colorJitter: 0.1 });
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(72 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0x7e827b, roughness: 0.86 }), { yOffset: 0.055, minScale: 0.72, maxScale: 1.5, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
     this.addInstancedProps("mudClump", "mud", Math.round(86 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x3f3325, roughness: 0.98 }), { yOffset: 0.045, minScale: 0.72, maxScale: 1.6, tumble: true, stretchY: 0.36 });
     this.addInstancedProps("sandGrainCluster", "sand", Math.round(124 * density), new THREE.BoxGeometry(0.34, 0.035, 0.22), new THREE.MeshStandardMaterial({ color: 0xb49c63, roughness: 0.98 }), { yOffset: 0.045, minScale: 0.52, maxScale: 1.34, lowShard: true, stretchX: 1.5, stretchZ: 0.75 });
@@ -1767,8 +1821,8 @@ class TerrainSystem {
     const mesh = new THREE.InstancedMesh(geometry, material, count);
     mesh.name = `terrain-${name}`;
     mesh.frustumCulled = true;
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
+    mesh.castShadow = Boolean(options.castShadow) && this.sim.quality.shadowQuality !== "off";
+    mesh.receiveShadow = Boolean(options.receiveShadow);
     const targets = Array.isArray(typeIds) ? typeIds : [typeIds];
     const minScale = options.minScale ?? 0.72;
     const maxScale = options.maxScale ?? 1.42;
@@ -1783,6 +1837,10 @@ class TerrainSystem {
       if (options.flat) {
         const tilt = options.tilt ?? 0.16;
         this.dummy.rotation.set(-Math.PI / 2 + (this.random() - 0.5) * tilt, (this.random() - 0.5) * tilt, yaw);
+      } else if (options.layCylinder) {
+        const liftVariance = options.liftVariance ?? 0.08;
+        this.propDirection.set(Math.sin(yaw), (this.random() - 0.5) * liftVariance, Math.cos(yaw)).normalize();
+        this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
       } else if (options.tumble) {
         this.dummy.rotation.set(this.random() * Math.PI, this.random() * Math.PI * 2, this.random() * Math.PI);
       } else if (options.lowShard) {
@@ -1798,6 +1856,10 @@ class TerrainSystem {
       this.dummy.scale.set(s * (options.stretchX ?? 1), s * (options.stretchY ?? 1), s * (options.stretchZ ?? 1));
       this.dummy.updateMatrix();
       mesh.setMatrixAt(placed, this.dummy.matrix);
+      if (options.colorJitter && material.color) {
+        this.propColor.copy(material.color).offsetHSL((this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter);
+        mesh.setColorAt(placed, this.propColor);
+      }
       placed += 1;
       return true;
     };
@@ -1828,6 +1890,7 @@ class TerrainSystem {
     }
     mesh.count = placed;
     mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     this.propInstanceCount += placed;
     this.sim.scene.add(mesh);
     this.visuals.push(mesh);
