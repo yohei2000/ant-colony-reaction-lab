@@ -1306,6 +1306,7 @@ class DebugPanel {
       `pathError ${averagePathError.toFixed(1)}`,
       `pheromone ${this.sim.pheromones?.mode ?? "off"} ${this.sim.pheromones?.resolution ?? 0}`,
       `terrain ${terrain?.id ?? "-"} move ${terrainMove.toFixed(2)} decay ${(terrainPheromone?.decay ?? 1).toFixed(2)} diff ${(terrainPheromone?.diffusion ?? 1).toFixed(2)}`,
+      `terrainProps ${this.sim.terrain?.propInstanceCount ?? 0}`,
     ].join("\n");
     this.elapsed = 0;
     this.frames = 0;
@@ -1329,7 +1330,10 @@ class TerrainSystem {
     this.roughness = new Float32Array(this.resolution * this.resolution);
     this.sampleScratch = { gx: 0, gz: 0, index: 0 };
     this.pheromoneScratch = { decay: 1, diffusion: 1 };
-    this.raycastHits = [];
+    this.propColor = new THREE.Color();
+    this.propDirection = new THREE.Vector3();
+    this.propMid = new THREE.Vector3();
+    this.propUp = new THREE.Vector3(0, 1, 0);
     this.rootSegments = [];
     this.puddlePatches = [];
     this.visuals = [];
@@ -1337,6 +1341,7 @@ class TerrainSystem {
     this.ownedMaterials = [];
     this.texture = null;
     this.mesh = null;
+    this.propInstanceCount = 0;
     this.hazardAccumulator = 0;
     this.dummy = new THREE.Object3D();
     this.generate(this.seed);
@@ -1362,6 +1367,7 @@ class TerrainSystem {
     this.ownedGeometries.length = 0;
     this.ownedMaterials.length = 0;
     this.mesh = null;
+    this.propInstanceCount = 0;
   }
 
   setEffectsEnabled(enabled) {
@@ -1621,20 +1627,6 @@ class TerrainSystem {
     return geometry;
   }
 
-  raycast(raycaster, target) {
-    if (!this.mesh) return null;
-    this.raycastHits.length = 0;
-    raycaster.intersectObject(this.mesh, false, this.raycastHits);
-    for (const hit of this.raycastHits) {
-      const point = hit.point;
-      if (Math.hypot(point.x, point.z) <= this.sim.worldRadius + this.sim.fieldMargin) {
-        target.copy(point);
-        return target;
-      }
-    }
-    return null;
-  }
-
   isBlocked(x, z) {
     if (!this.effectsEnabled) return false;
     return this.sampleType(x, z).blocked;
@@ -1755,48 +1747,134 @@ class TerrainSystem {
   }
 
   addProps() {
-    const density = (this.complexity === "high" ? 1.25 : this.complexity === "low" ? 0.58 : 0.85) * this.sim.quality.effectsQuality;
-    this.addInstancedProps("grass", Math.round(42 * density), new THREE.BoxGeometry(0.34, 0.035, 0.22), new THREE.MeshStandardMaterial({ color: 0x4f7d3f, roughness: 0.9 }));
-    this.addInstancedProps("leafLitter", Math.round(36 * density), new THREE.PlaneGeometry(0.58, 0.22), new THREE.MeshStandardMaterial({ color: 0x8b5a28, roughness: 0.88, side: THREE.DoubleSide }));
-    this.addInstancedProps("gravel", Math.round(58 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x8b8d83, roughness: 0.92 }));
-    this.addInstancedProps("pavement", Math.round(10 * density), new THREE.BoxGeometry(0.8, 0.05, 0.46), new THREE.MeshStandardMaterial({ color: 0x7f837c, roughness: 0.82 }));
-    this.addInstancedProps("root", Math.round(10 * density), new THREE.BoxGeometry(0.9, 0.08, 0.22), new THREE.MeshStandardMaterial({ color: 0x5e3b1c, roughness: 0.9 }));
+    const density = (this.complexity === "high" ? 1.9 : this.complexity === "low" ? 0.42 : 1) * this.sim.quality.effectsQuality;
+    this.addInstancedProps("grassTuft", "grass", Math.round(420 * density), new THREE.ConeGeometry(0.08, 0.7, 4, 1), new THREE.MeshStandardMaterial({ color: 0x547d3d, roughness: 0.92 }), { yOffset: 0.28, minScale: 0.65, maxScale: 1.28, upright: true, tilt: 0.28 });
+    this.addInstancedProps("leafFlake", "leafLitter", Math.round(280 * density), new THREE.PlaneGeometry(0.7, 0.26), new THREE.MeshStandardMaterial({ color: 0x8b5a28, roughness: 0.88, side: THREE.DoubleSide }), { yOffset: 0.075, minScale: 0.62, maxScale: 1.45, flat: true, stretchX: 1.45, stretchZ: 0.82 });
+    this.addInstancedProps("pebble", "gravel", Math.round(250 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x85867e, roughness: 0.94 }), { yOffset: 0.08, minScale: 0.62, maxScale: 1.55, tumble: true, stretchY: 0.58 });
+    this.addRootProps(Math.round(76 * density), Math.round(28 * density));
+    this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(86 * density), new THREE.BoxGeometry(0.08, 0.06, 1.15), new THREE.MeshStandardMaterial({ color: 0x5f3b1d, roughness: 0.94 }), { yOffset: 0.09, minScale: 0.65, maxScale: 1.42, lowShard: true, stretchZ: 1.4 });
+    this.addInstancedProps("barkChip", ["root", "leafLitter"], Math.round(74 * density), new THREE.BoxGeometry(0.44, 0.05, 0.18), new THREE.MeshStandardMaterial({ color: 0x70411e, roughness: 0.96 }), { yOffset: 0.11, minScale: 0.62, maxScale: 1.35, lowShard: true, stretchX: 1.25 });
+    this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(72 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0x7e827b, roughness: 0.86 }), { yOffset: 0.055, minScale: 0.72, maxScale: 1.5, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
+    this.addInstancedProps("mudClump", "mud", Math.round(86 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x3f3325, roughness: 0.98 }), { yOffset: 0.045, minScale: 0.72, maxScale: 1.6, tumble: true, stretchY: 0.36 });
+    this.addInstancedProps("sandGrainCluster", "sand", Math.round(124 * density), new THREE.BoxGeometry(0.34, 0.035, 0.22), new THREE.MeshStandardMaterial({ color: 0xb49c63, roughness: 0.98 }), { yOffset: 0.045, minScale: 0.52, maxScale: 1.34, lowShard: true, stretchX: 1.5, stretchZ: 0.75 });
   }
 
-  addInstancedProps(typeId, count, geometry, material) {
+  addInstancedProps(name, typeIds, count, geometry, material, options = {}) {
     this.ownedGeometries.push(geometry);
     this.ownedMaterials.push(material);
     const mesh = new THREE.InstancedMesh(geometry, material, count);
+    mesh.name = `terrain-${name}`;
     mesh.frustumCulled = true;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
+    const targets = Array.isArray(typeIds) ? typeIds : [typeIds];
+    const minScale = options.minScale ?? 0.72;
+    const maxScale = options.maxScale ?? 1.42;
+    const yOffset = options.yOffset ?? 0.045;
+    const attempts = Math.max(count * 12, count + 120);
+    const place = (x, z) => {
+      const type = this.sampleType(x, z);
+      if (!targets.includes(type.id)) return false;
+      const h = this.sampleHeight(x, z);
+      this.dummy.position.set(x, h + yOffset, z);
+      const yaw = this.random() * Math.PI * 2;
+      if (options.flat) {
+        const tilt = options.tilt ?? 0.16;
+        this.dummy.rotation.set(-Math.PI / 2 + (this.random() - 0.5) * tilt, (this.random() - 0.5) * tilt, yaw);
+      } else if (options.tumble) {
+        this.dummy.rotation.set(this.random() * Math.PI, this.random() * Math.PI * 2, this.random() * Math.PI);
+      } else if (options.lowShard) {
+        const tilt = options.tilt ?? 0.22;
+        this.dummy.rotation.set((this.random() - 0.5) * tilt, yaw, (this.random() - 0.5) * tilt);
+      } else if (options.upright) {
+        const tilt = options.tilt ?? 0.18;
+        this.dummy.rotation.set((this.random() - 0.5) * tilt, yaw, (this.random() - 0.5) * tilt);
+      } else {
+        this.dummy.rotation.set(0, yaw, 0);
+      }
+      const s = minScale + this.random() * (maxScale - minScale);
+      this.dummy.scale.set(s * (options.stretchX ?? 1), s * (options.stretchY ?? 1), s * (options.stretchZ ?? 1));
+      this.dummy.updateMatrix();
+      mesh.setMatrixAt(placed, this.dummy.matrix);
+      placed += 1;
+      return true;
+    };
     let placed = 0;
-    for (let attempt = 0; attempt < count * 8 && placed < count; attempt += 1) {
+    for (let attempt = 0; attempt < attempts && placed < count; attempt += 1) {
       const angle = this.random() * Math.PI * 2;
       const radius = Math.sqrt(this.random()) * this.sim.worldRadius;
       const x = Math.cos(angle) * radius;
       const z = Math.sin(angle) * radius;
-      const type = this.sampleType(x, z);
-      if (type.id !== typeId) continue;
-      const h = this.sampleHeight(x, z);
-      this.dummy.position.set(x, h + 0.045, z);
-      if (typeId === "leafLitter") {
-        this.dummy.rotation.set(-Math.PI / 2, 0, this.random() * Math.PI * 2);
-      } else if (typeId === "gravel") {
-        this.dummy.rotation.set(this.random() * Math.PI, this.random() * Math.PI * 2, this.random() * Math.PI);
-      } else {
-        this.dummy.rotation.set(0, this.random() * Math.PI * 2, 0);
+      place(x, z);
+    }
+    if (placed < count) {
+      const targetIndexes = new Set(targets.map((id) => TERRAIN_TYPES[id]?.index).filter((index) => index != null));
+      const stride = this.complexity === "high" ? 2 : 3;
+      const startGX = Math.floor(this.random() * stride);
+      const startGZ = Math.floor(this.random() * stride);
+      for (let gz = startGZ; gz < this.resolution && placed < count; gz += stride) {
+        const row = gz * this.resolution;
+        for (let gx = startGX; gx < this.resolution && placed < count; gx += stride) {
+          const index = row + gx;
+          if (!targetIndexes.has(this.terrainType[index])) continue;
+          const x = (gx + this.random()) * this.cellSize - this.fieldRadius;
+          const z = (gz + this.random()) * this.cellSize - this.fieldRadius;
+          if (Math.hypot(x, z) > this.sim.worldRadius - 1) continue;
+          place(x, z);
+        }
       }
-      const s = 0.72 + this.random() * 0.7;
-      this.dummy.scale.set(s, s, s);
-      this.dummy.updateMatrix();
-      mesh.setMatrixAt(placed, this.dummy.matrix);
-      placed += 1;
     }
     mesh.count = placed;
     mesh.instanceMatrix.needsUpdate = true;
+    this.propInstanceCount += placed;
     this.sim.scene.add(mesh);
     this.visuals.push(mesh);
+  }
+
+  addRootProps(segmentCount, knotCount) {
+    const segmentGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1);
+    const segmentMaterial = new THREE.MeshStandardMaterial({ color: 0x6a4524, roughness: 0.95 });
+    const segmentMesh = new THREE.InstancedMesh(segmentGeometry, segmentMaterial, segmentCount);
+    segmentMesh.name = "terrain-rootSegment";
+    segmentMesh.frustumCulled = true;
+    segmentMesh.castShadow = false;
+    segmentMesh.receiveShadow = false;
+    this.ownedGeometries.push(segmentGeometry);
+    this.ownedMaterials.push(segmentMaterial);
+
+    let placedSegments = 0;
+    for (let attempt = 0; attempt < segmentCount * 10 && placedSegments < segmentCount; attempt += 1) {
+      const root = this.rootSegments[Math.floor(this.random() * this.rootSegments.length)];
+      if (!root) break;
+      const t = this.random();
+      const length = 1.15 + this.random() * 2.1;
+      const dx = root.x2 - root.x1;
+      const dz = root.z2 - root.z1;
+      const rootLength = Math.hypot(dx, dz) || 1;
+      const dirX = dx / rootLength;
+      const dirZ = dz / rootLength;
+      const x = root.x1 + dx * t + (this.random() - 0.5) * root.width * 0.38;
+      const z = root.z1 + dz * t + (this.random() - 0.5) * root.width * 0.38;
+      if (Math.hypot(x, z) > this.sim.worldRadius - 2) continue;
+      if (this.sampleType(x, z).id !== "root") continue;
+      const radius = 0.055 + this.random() * 0.105;
+      this.propDirection.set(dirX, 0.05 + (this.random() - 0.5) * 0.04, dirZ).normalize();
+      this.dummy.position.set(x, this.sampleHeight(x, z) + radius * 0.82, z);
+      this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
+      this.dummy.scale.set(radius, length, radius * (0.78 + this.random() * 0.32));
+      this.dummy.updateMatrix();
+      segmentMesh.setMatrixAt(placedSegments, this.dummy.matrix);
+      placedSegments += 1;
+    }
+    segmentMesh.count = placedSegments;
+    segmentMesh.instanceMatrix.needsUpdate = true;
+    this.propInstanceCount += placedSegments;
+    this.sim.scene.add(segmentMesh);
+    this.visuals.push(segmentMesh);
+
+    const knotGeometry = new THREE.DodecahedronGeometry(0.34, 0);
+    const knotMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2a14, roughness: 0.98 });
+    this.addInstancedProps("rootKnot", "root", knotCount, knotGeometry, knotMaterial, { yOffset: 0.22, minScale: 0.55, maxScale: 1.35, tumble: true, stretchY: 0.72 });
   }
 }
 
@@ -2410,6 +2488,15 @@ class Ant3D {
     }
 
     this.fieldGradient = { x: 0, z: 0 };
+    this.renderStateScratch = {
+      x: this.x,
+      z: this.z,
+      angle: this.angle,
+      y: 0,
+      scale: 1,
+      state: this.state,
+      carrying: 0,
+    };
     this.foodAntennaeOptions = {
       lookAhead: 4.8 + this.traits.curiosity * 2.4,
       antennaAngle: 0.58,
@@ -3325,15 +3412,15 @@ class Ant3D {
   renderState(sim, alpha) {
     const x = this.prevX + (this.x - this.prevX) * alpha;
     const z = this.prevZ + (this.z - this.prevZ) * alpha;
-    return {
-      x,
-      z,
-      angle: this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha,
-      y: sim.getSurfaceY(x, z, 0.72) + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03,
-      scale: this.state === "stunned" ? 0.82 : 1,
-      state: this.state,
-      carrying: this.carrying,
-    };
+    const state = this.renderStateScratch;
+    state.x = x;
+    state.z = z;
+    state.angle = this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha;
+    state.y = sim.getSurfaceY(x, z, 0.72) + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03;
+    state.scale = this.state === "stunned" ? 0.82 : 1;
+    state.state = this.state;
+    state.carrying = this.carrying;
+    return state;
   }
 }
 
@@ -4056,11 +4143,17 @@ class AntColony3D {
       }
       this.pheromones?.deposit("avoid", patch.x, patch.z, patch.power * dt * 0.5, patch.radius + 4);
     }
-    this.water = this.water.filter((patch) => {
-      if (patch.power > 0.09 && patch.age < 85) return true;
-      this.disposeDynamicItem(patch);
-      return false;
-    });
+    let waterWrite = 0;
+    for (let i = 0; i < this.water.length; i += 1) {
+      const patch = this.water[i];
+      if (patch.power > 0.09 && patch.age < 85) {
+        this.water[waterWrite] = patch;
+        waterWrite += 1;
+      } else {
+        this.disposeDynamicItem(patch);
+      }
+    }
+    this.water.length = waterWrite;
 
     for (const stone of this.stones) {
       stone.shock = Math.max(0, stone.shock - dt * 0.7);
@@ -4077,11 +4170,17 @@ class AntColony3D {
       trail.mesh.material.opacity = Math.max(0, trail.life * trail.baseOpacity * followVisibility);
       trail.mesh.scale.setScalar(trail.scale * (1 + (1 - trail.life) * 0.2));
     }
-    this.trails = this.trails.filter((trail) => {
-      if (trail.life > 0.02) return true;
-      this.disposeDynamicItem(trail);
-      return false;
-    });
+    let trailWrite = 0;
+    for (let i = 0; i < this.trails.length; i += 1) {
+      const trail = this.trails[i];
+      if (trail.life > 0.02) {
+        this.trails[trailWrite] = trail;
+        trailWrite += 1;
+      } else {
+        this.disposeDynamicItem(trail);
+      }
+    }
+    this.trails.length = trailWrite;
 
     this.pheromones?.update(dt);
     this.rebuildAntSpatialIndex();
@@ -4288,11 +4387,8 @@ class AntColony3D {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -(((clientY - rect.top) / rect.height) * 2 - 1));
     this.raycaster.setFromCamera(this.ndc, this.camera);
-    let hit = this.terrain?.raycast(this.raycaster, this.groundHit);
-    if (!hit) {
-      hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHit);
-      if (hit) this.groundHit.y = this.getSurfaceY(hit.x, hit.z);
-    }
+    const hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHit);
+    if (hit) this.groundHit.y = this.getSurfaceY(hit.x, hit.z);
     if (!hit) return null;
     const d = Math.hypot(hit.x, hit.z);
     if (d > this.worldRadius + this.fieldMargin) return null;
