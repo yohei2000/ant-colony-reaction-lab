@@ -15,6 +15,9 @@ const ui = {
   foodTypeHint: document.querySelector("#foodTypeHint"),
   naturalFoodToggle: document.querySelector("#naturalFoodToggle"),
   naturalFoodRate: document.querySelector("#naturalFoodRate"),
+  terrainEffectsToggle: document.querySelector("#terrainEffectsToggle"),
+  terrainComplexity: document.querySelector("#terrainComplexity"),
+  terrainRegenerate: document.querySelector("#terrainRegenerateBtn"),
   statExplore: document.querySelector("#statExplore"),
   statAlert: document.querySelector("#statAlert"),
   statRescue: document.querySelector("#statRescue"),
@@ -124,6 +127,27 @@ const chance = (p) => Math.random() < p;
 const distance2 = (ax, az, bx, bz) => Math.hypot(ax - bx, az - bz);
 const normAngle = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle));
 
+function hashSeed(value) {
+  let hash = 2166136261;
+  const text = String(value);
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function makeSeededRandom(seed) {
+  let state = hashSeed(seed) || 1;
+  return () => {
+    state |= 0;
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 // Food trails model short-lived recruitment signals: successful returners reinforce them,
 // and depleted sources stop reinforcement so the trail quickly evaporates.
 const PHEROMONE_PARAMS = {
@@ -157,12 +181,160 @@ const HOMING_PARAMS = {
 };
 
 const ANT_FORMATION_PARAMS = {
-  hardRadius: 0.82,
-  personalRadius: 2.05,
-  sameDirectionRadius: 5.2,
-  laneWidth: 1.15,
-  sideBySideForwardRange: 1.85,
-  followGap: 3.05,
+  hardRadius: 0.78,
+  personalRadius: 1.82,
+  sameDirectionRadius: 6.2,
+  laneWidth: 0.72,
+  sideBySideForwardRange: 2.65,
+  followGap: 3.65,
+  laneMergeGain: 0.2,
+  queueOrderGain: 0.48,
+};
+
+const TERRAIN_TYPES = {
+  soil: {
+    id: "soil",
+    label: "土",
+    index: 0,
+    color: 0x765934,
+    movement: 1,
+    detection: 1,
+    roughness: 0.22,
+    pheromoneDecay: 1,
+    pheromoneDiffusion: 1,
+    blocked: false,
+    foodAffinity: { sugar: 1, fruit: 1, starch: 1, fat: 1, seed: 1.15, protein: 0.95, mixed: 1 },
+  },
+  grass: {
+    id: "grass",
+    label: "芝",
+    index: 1,
+    color: 0x4f753f,
+    movement: 0.78,
+    detection: 0.9,
+    roughness: 0.48,
+    pheromoneDecay: 0.88,
+    pheromoneDiffusion: 1.08,
+    blocked: false,
+    foodAffinity: { sugar: 1.08, fruit: 1.05, starch: 0.8, fat: 0.8, seed: 0.95, protein: 1.2, mixed: 0.85 },
+  },
+  path: {
+    id: "path",
+    label: "踏み跡",
+    index: 2,
+    color: 0x927447,
+    movement: 1.18,
+    detection: 1.05,
+    roughness: 0.12,
+    pheromoneDecay: 0.72,
+    pheromoneDiffusion: 0.92,
+    blocked: false,
+    foodAffinity: { sugar: 1.3, fruit: 1.35, starch: 1.38, fat: 1.18, seed: 1.15, protein: 0.85, mixed: 1.25 },
+  },
+  gravel: {
+    id: "gravel",
+    label: "砂利",
+    index: 3,
+    color: 0x77786e,
+    movement: 0.7,
+    detection: 0.88,
+    roughness: 0.62,
+    pheromoneDecay: 1.35,
+    pheromoneDiffusion: 0.72,
+    blocked: false,
+    foodAffinity: { sugar: 0.75, fruit: 0.76, starch: 0.86, fat: 0.8, seed: 0.72, protein: 0.7, mixed: 0.78 },
+  },
+  sand: {
+    id: "sand",
+    label: "砂地",
+    index: 4,
+    color: 0xa99158,
+    movement: 0.9,
+    detection: 0.95,
+    roughness: 0.38,
+    pheromoneDecay: 1.42,
+    pheromoneDiffusion: 0.82,
+    blocked: false,
+    foodAffinity: { sugar: 0.86, fruit: 0.88, starch: 0.9, fat: 0.82, seed: 0.9, protein: 0.72, mixed: 0.85 },
+  },
+  leafLitter: {
+    id: "leafLitter",
+    label: "落ち葉",
+    index: 5,
+    color: 0x704421,
+    movement: 0.76,
+    detection: 0.82,
+    roughness: 0.72,
+    pheromoneDecay: 0.95,
+    pheromoneDiffusion: 1.02,
+    blocked: false,
+    foodAffinity: { sugar: 0.82, fruit: 0.95, starch: 0.82, fat: 0.9, seed: 1.05, protein: 1.45, mixed: 1.05 },
+  },
+  root: {
+    id: "root",
+    label: "木の根",
+    index: 6,
+    color: 0x4c2e18,
+    movement: 0.48,
+    detection: 0.86,
+    roughness: 0.86,
+    pheromoneDecay: 0.96,
+    pheromoneDiffusion: 0.88,
+    blocked: true,
+    foodAffinity: { sugar: 0.7, fruit: 0.75, starch: 0.7, fat: 0.82, seed: 0.86, protein: 1.05, mixed: 0.8 },
+  },
+  mud: {
+    id: "mud",
+    label: "泥",
+    index: 7,
+    color: 0x4e422e,
+    movement: 0.55,
+    detection: 0.86,
+    roughness: 0.58,
+    pheromoneDecay: 0.78,
+    pheromoneDiffusion: 1.22,
+    blocked: false,
+    foodAffinity: { sugar: 0.72, fruit: 0.82, starch: 0.65, fat: 0.66, seed: 0.75, protein: 1.08, mixed: 0.7 },
+  },
+  puddle: {
+    id: "puddle",
+    label: "水たまり",
+    index: 8,
+    color: 0x4f9eb2,
+    movement: 0.35,
+    detection: 0.76,
+    roughness: 0.2,
+    pheromoneDecay: 1.55,
+    pheromoneDiffusion: 1.35,
+    blocked: true,
+    foodAffinity: { sugar: 0.35, fruit: 0.42, starch: 0.35, fat: 0.35, seed: 0.35, protein: 0.45, mixed: 0.35 },
+  },
+  pavement: {
+    id: "pavement",
+    label: "舗装片",
+    index: 9,
+    color: 0x7c817b,
+    movement: 1.24,
+    detection: 1.02,
+    roughness: 0.18,
+    pheromoneDecay: 1.22,
+    pheromoneDiffusion: 0.7,
+    blocked: false,
+    foodAffinity: { sugar: 1.2, fruit: 1.34, starch: 1.35, fat: 1.18, seed: 0.92, protein: 0.68, mixed: 1.3 },
+  },
+};
+
+const TERRAIN_TYPE_ORDER = ["soil", "grass", "path", "gravel", "sand", "leafLitter", "root", "mud", "puddle", "pavement"];
+const TERRAIN_BY_INDEX = TERRAIN_TYPE_ORDER.map((id) => TERRAIN_TYPES[id]);
+const TERRAIN_COMPLEXITY_LEVELS = ["low", "medium", "high"];
+const TERRAIN_TEXTURE_MANIFEST = {
+  parkGroundAtlas: "assets/textures/terrain/park_ground_atlas.png",
+  grassPatch: "assets/textures/terrain/grass_patch.png",
+  leafLitter: "assets/textures/terrain/leaf_litter.png",
+  gravelPatch: "assets/textures/terrain/gravel_patch.png",
+  rootBark: "assets/textures/terrain/root_bark.png",
+  mudPatch: "assets/textures/terrain/mud_patch.png",
+  pavementCrack: "assets/textures/terrain/pavement_crack.png",
 };
 
 const FOOD_TYPES = {
@@ -1116,6 +1288,9 @@ class DebugPanel {
       pathErrorSum += ant.pathError ?? 0;
     }
     const averagePathError = this.sim.ants.length > 0 ? pathErrorSum / this.sim.ants.length : 0;
+    const terrain = this.sim.terrain && Number.isFinite(this.sim.debugCursorX) ? this.sim.terrain.sampleType(this.sim.debugCursorX, this.sim.debugCursorZ) : null;
+    const terrainMove = terrain ? this.sim.terrain.sampleMovementMultiplier(this.sim.debugCursorX, this.sim.debugCursorZ) : 1;
+    const terrainPheromone = terrain ? this.sim.terrain.samplePheromoneModifiers(this.sim.debugCursorX, this.sim.debugCursorZ) : null;
     ui.debugMetrics.textContent = [
       `frame ${this.frameMs.toFixed(1)}ms`,
       `fps ${(1000 / this.frameMs).toFixed(0)}`,
@@ -1130,9 +1305,421 @@ class DebugPanel {
       `searchNest ${searchNestCount}`,
       `pathError ${averagePathError.toFixed(1)}`,
       `pheromone ${this.sim.pheromones?.mode ?? "off"} ${this.sim.pheromones?.resolution ?? 0}`,
+      `terrain ${terrain?.id ?? "-"} move ${terrainMove.toFixed(2)} decay ${(terrainPheromone?.decay ?? 1).toFixed(2)} diff ${(terrainPheromone?.diffusion ?? 1).toFixed(2)}`,
     ].join("\n");
     this.elapsed = 0;
     this.frames = 0;
+  }
+}
+
+class TerrainSystem {
+  constructor(sim, options = {}) {
+    this.sim = sim;
+    this.resolution = options.resolution ?? 144;
+    this.fieldRadius = sim.worldRadius + sim.fieldMargin;
+    this.fieldSize = this.fieldRadius * 2;
+    this.cellSize = this.fieldSize / this.resolution;
+    this.invCellSize = 1 / this.cellSize;
+    this.seed = options.seed ?? readStorage("ant3d.terrainSeed") ?? `terrain-${Date.now()}`;
+    this.complexity = TERRAIN_COMPLEXITY_LEVELS.includes(readStorage("ant3d.terrainComplexity")) ? readStorage("ant3d.terrainComplexity") : "medium";
+    this.effectsEnabled = readStorage("ant3d.terrainEffects") !== "0";
+    this.terrainType = new Uint8Array(this.resolution * this.resolution);
+    this.height = new Float32Array(this.resolution * this.resolution);
+    this.moisture = new Float32Array(this.resolution * this.resolution);
+    this.roughness = new Float32Array(this.resolution * this.resolution);
+    this.sampleScratch = { gx: 0, gz: 0, index: 0 };
+    this.pheromoneScratch = { decay: 1, diffusion: 1 };
+    this.rootSegments = [];
+    this.puddlePatches = [];
+    this.visuals = [];
+    this.ownedGeometries = [];
+    this.ownedMaterials = [];
+    this.texture = null;
+    this.mesh = null;
+    this.hazardAccumulator = 0;
+    this.dummy = new THREE.Object3D();
+    this.generate(this.seed);
+  }
+
+  reset() {
+    this.generate(this.seed);
+  }
+
+  dispose() {
+    this.clearVisuals();
+    this.texture?.dispose();
+    this.texture = null;
+  }
+
+  clearVisuals() {
+    for (const visual of this.visuals) this.sim.scene.remove(visual);
+    this.visuals.length = 0;
+    this.texture?.dispose();
+    this.texture = null;
+    for (const geometry of this.ownedGeometries) geometry.dispose();
+    for (const material of this.ownedMaterials) disposeMaterial(material);
+    this.ownedGeometries.length = 0;
+    this.ownedMaterials.length = 0;
+    this.mesh = null;
+  }
+
+  setEffectsEnabled(enabled) {
+    this.effectsEnabled = Boolean(enabled);
+    writeStorage("ant3d.terrainEffects", this.effectsEnabled ? "1" : "0");
+  }
+
+  setComplexity(complexity) {
+    this.complexity = TERRAIN_COMPLEXITY_LEVELS.includes(complexity) ? complexity : "medium";
+    writeStorage("ant3d.terrainComplexity", this.complexity);
+  }
+
+  regenerate() {
+    this.seed = `terrain-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    writeStorage("ant3d.terrainSeed", this.seed);
+    this.generate(this.seed);
+  }
+
+  update(dt) {
+    if (!this.effectsEnabled || !this.sim.pheromones) return;
+    this.hazardAccumulator += dt;
+    if (this.hazardAccumulator < 0.75) return;
+    const elapsed = this.hazardAccumulator;
+    this.hazardAccumulator = 0;
+    for (const patch of this.puddlePatches) {
+      this.sim.pheromones.deposit("avoid", patch.x, patch.z, 0.045 * elapsed, patch.radius + 5);
+    }
+  }
+
+  generate(seed = this.seed) {
+    this.seed = seed;
+    this.random = makeSeededRandom(seed);
+    this.rootSegments.length = 0;
+    this.puddlePatches.length = 0;
+    const complexityScale = this.complexity === "high" ? 1.35 : this.complexity === "low" ? 0.7 : 1;
+    const rootCount = Math.round(4 * complexityScale);
+    const puddleCount = Math.round(4 * complexityScale);
+    for (let i = 0; i < rootCount; i += 1) {
+      const a = this.random() * Math.PI * 2;
+      const baseRadius = this.sim.worldRadius * (0.36 + this.random() * 0.42);
+      const x1 = Math.cos(a) * baseRadius;
+      const z1 = Math.sin(a) * baseRadius;
+      const length = this.sim.worldRadius * (0.28 + this.random() * 0.34);
+      const bend = a + (this.random() - 0.5) * 1.4;
+      this.rootSegments.push({
+        x1,
+        z1,
+        x2: x1 + Math.cos(bend) * length,
+        z2: z1 + Math.sin(bend) * length,
+        width: 2.2 + this.random() * 2.4,
+      });
+    }
+    for (let i = 0; i < puddleCount; i += 1) {
+      const a = this.random() * Math.PI * 2;
+      const r = Math.sqrt(this.random()) * this.sim.worldRadius * 0.78;
+      this.puddlePatches.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, radius: 7 + this.random() * 12 });
+    }
+
+    const pathAngle = -0.16 + this.random() * 0.42;
+    const dirX = Math.cos(pathAngle);
+    const dirZ = Math.sin(pathAngle);
+    const pathPhase = this.random() * Math.PI * 2;
+    const safeRadius = this.sim.nest.radius + 16;
+
+    for (let gz = 0; gz < this.resolution; gz += 1) {
+      const z = (gz + 0.5) * this.cellSize - this.fieldRadius;
+      const row = gz * this.resolution;
+      for (let gx = 0; gx < this.resolution; gx += 1) {
+        const x = (gx + 0.5) * this.cellSize - this.fieldRadius;
+        const index = row + gx;
+        const worldDistance = Math.hypot(x, z);
+        if (worldDistance > this.sim.worldRadius + 1) {
+          this.terrainType[index] = TERRAIN_TYPES.soil.index;
+          this.height[index] = 0;
+          this.moisture[index] = 0;
+          this.roughness[index] = 0;
+          continue;
+        }
+
+        const toNestX = x - this.sim.nest.x;
+        const toNestZ = z - this.sim.nest.z;
+        const nestDistance = Math.hypot(toNestX, toNestZ);
+        const alongPath = toNestX * dirX + toNestZ * dirZ;
+        const lateral = Math.abs(toNestX * -dirZ + toNestZ * dirX + Math.sin(alongPath * 0.035 + pathPhase) * 8.5);
+        const broadNoise = this.noise(x * 0.028, z * 0.028);
+        const fineNoise = this.noise(x * 0.085 + 21.7, z * 0.085 - 9.2);
+        let type = TERRAIN_TYPES.soil;
+
+        if (nestDistance < safeRadius) {
+          type = lateral < 9 ? TERRAIN_TYPES.path : TERRAIN_TYPES.soil;
+        } else if (lateral < 5.5 + broadNoise * 3.5) {
+          type = fineNoise > 0.78 ? TERRAIN_TYPES.pavement : TERRAIN_TYPES.path;
+        } else if (this.pointInPuddle(x, z, 0.62)) {
+          type = TERRAIN_TYPES.puddle;
+        } else if (this.pointInPuddle(x, z, 1.25)) {
+          type = TERRAIN_TYPES.mud;
+        } else if (this.pointOnRoot(x, z) && nestDistance > safeRadius + 4) {
+          type = TERRAIN_TYPES.root;
+        } else if (broadNoise > 0.76) {
+          type = TERRAIN_TYPES.leafLitter;
+        } else if (broadNoise < 0.18) {
+          type = fineNoise < 0.42 ? TERRAIN_TYPES.sand : TERRAIN_TYPES.gravel;
+        } else if (fineNoise > 0.52) {
+          type = TERRAIN_TYPES.grass;
+        }
+
+        this.terrainType[index] = type.index;
+        this.moisture[index] = clamp((type === TERRAIN_TYPES.mud ? 0.72 : type === TERRAIN_TYPES.puddle ? 1 : 0.18 + broadNoise * 0.32), 0, 1);
+        this.roughness[index] = clamp(type.roughness + fineNoise * 0.12, 0, 1);
+        this.height[index] = clamp((type === TERRAIN_TYPES.root ? 0.9 : type === TERRAIN_TYPES.puddle ? -0.35 : (broadNoise - 0.5) * 0.35) + fineNoise * 0.08, -0.5, 1.2);
+      }
+    }
+    this.addTerrainVisuals();
+    this.sim.pheromones?.refreshTerrainModifiers?.();
+  }
+
+  noise(x, z) {
+    const x0 = Math.floor(x);
+    const z0 = Math.floor(z);
+    const tx = x - x0;
+    const tz = z - z0;
+    const sx = tx * tx * (3 - 2 * tx);
+    const sz = tz * tz * (3 - 2 * tz);
+    const n00 = this.hashNoise(x0, z0);
+    const n10 = this.hashNoise(x0 + 1, z0);
+    const n01 = this.hashNoise(x0, z0 + 1);
+    const n11 = this.hashNoise(x0 + 1, z0 + 1);
+    const a = n00 * (1 - sx) + n10 * sx;
+    const b = n01 * (1 - sx) + n11 * sx;
+    return a * (1 - sz) + b * sz;
+  }
+
+  hashNoise(x, z) {
+    let h = hashSeed(`${this.seed}:${x}:${z}`);
+    h ^= h >>> 16;
+    h = Math.imul(h, 2246822519);
+    h ^= h >>> 13;
+    return ((h >>> 0) % 10000) / 10000;
+  }
+
+  pointInPuddle(x, z, scale) {
+    for (const patch of this.puddlePatches) {
+      if (distance2(x, z, patch.x, patch.z) < patch.radius * scale) return true;
+    }
+    return false;
+  }
+
+  pointOnRoot(x, z) {
+    for (const root of this.rootSegments) {
+      const point = closestPointOnSegment(x, z, root.x1, root.z1, root.x2, root.z2);
+      if (distance2(x, z, point.x, point.z) < root.width) return true;
+    }
+    return false;
+  }
+
+  worldToIndex(x, z, target = this.sampleScratch) {
+    const gx = clamp(Math.floor((x + this.fieldRadius) * this.invCellSize), 0, this.resolution - 1);
+    const gz = clamp(Math.floor((z + this.fieldRadius) * this.invCellSize), 0, this.resolution - 1);
+    target.gx = gx;
+    target.gz = gz;
+    target.index = gz * this.resolution + gx;
+    return target;
+  }
+
+  sampleType(x, z) {
+    return TERRAIN_BY_INDEX[this.terrainType[this.worldToIndex(x, z).index]] ?? TERRAIN_TYPES.soil;
+  }
+
+  sampleTypeIndex(x, z) {
+    return this.terrainType[this.worldToIndex(x, z).index] ?? TERRAIN_TYPES.soil.index;
+  }
+
+  sampleMovementMultiplier(x, z) {
+    if (!this.effectsEnabled) return 1;
+    return this.sampleType(x, z).movement;
+  }
+
+  sampleDetectionMultiplier(x, z) {
+    if (!this.effectsEnabled) return 1;
+    return this.sampleType(x, z).detection;
+  }
+
+  sampleRoughness(x, z) {
+    if (!this.effectsEnabled) return 0;
+    return this.roughness[this.worldToIndex(x, z).index] ?? 0;
+  }
+
+  samplePheromoneModifiers(x, z, target = this.pheromoneScratch) {
+    if (!this.effectsEnabled) {
+      target.decay = 1;
+      target.diffusion = 1;
+      return target;
+    }
+    const type = this.sampleType(x, z);
+    target.decay = type.pheromoneDecay;
+    target.diffusion = type.pheromoneDiffusion;
+    return target;
+  }
+
+  sampleHeight(x, z) {
+    return this.height[this.worldToIndex(x, z).index] ?? 0;
+  }
+
+  isBlocked(x, z) {
+    if (!this.effectsEnabled) return false;
+    return this.sampleType(x, z).blocked;
+  }
+
+  isBlockedArea(x, z, radius = 0) {
+    if (!this.effectsEnabled) return false;
+    if (this.isBlocked(x, z)) return true;
+    const sampleRadius = Math.max(1, radius * 0.62);
+    for (let i = 0; i < 4; i += 1) {
+      const angle = i * Math.PI * 0.5 + Math.PI * 0.25;
+      if (this.isBlocked(x + Math.cos(angle) * sampleRadius, z + Math.sin(angle) * sampleRadius)) return true;
+    }
+    return false;
+  }
+
+  findNearestOpenPoint(x, z, radius = 0) {
+    if (!this.effectsEnabled || !this.isBlockedArea(x, z, radius)) return { x, z };
+    const maxDistance = Math.max(8, radius + 10);
+    for (let ring = 1; ring <= 5; ring += 1) {
+      const distance = (ring / 5) * maxDistance;
+      const samples = 8 + ring * 4;
+      for (let i = 0; i < samples; i += 1) {
+        const angle = (i / samples) * Math.PI * 2;
+        const px = x + Math.cos(angle) * distance;
+        const pz = z + Math.sin(angle) * distance;
+        if (Math.hypot(px, pz) + radius > this.sim.worldRadius - 2) continue;
+        if (!this.isBlockedArea(px, pz, radius)) return { x: px, z: pz };
+      }
+    }
+    return null;
+  }
+
+  findSpawnPoint(kind, spawnRadius = 0, isClear = null) {
+    const category = kind ?? "mixed";
+    for (let attempt = 0; attempt < 56; attempt += 1) {
+      const angle = this.random() * Math.PI * 2;
+      const radius = Math.sqrt(this.random()) * (this.sim.worldRadius - spawnRadius - 4);
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      const type = this.sampleType(x, z);
+      if (type.blocked) continue;
+      const affinity = type.foodAffinity[category] ?? 1;
+      if (this.random() > clamp(affinity / 1.55, 0.18, 1)) continue;
+      if (!isClear || isClear(x, z)) return { x, z };
+    }
+    return null;
+  }
+
+  addTerrainVisuals() {
+    this.clearVisuals();
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 512;
+    const context = canvas.getContext("2d");
+    const image = context.createImageData(canvas.width, canvas.height);
+    for (let y = 0; y < canvas.height; y += 1) {
+      const z = (y / (canvas.height - 1)) * this.fieldSize - this.fieldRadius;
+      for (let x = 0; x < canvas.width; x += 1) {
+        const wx = (x / (canvas.width - 1)) * this.fieldSize - this.fieldRadius;
+        const pixel = (y * canvas.width + x) * 4;
+        if (wx * wx + z * z > this.sim.worldRadius * this.sim.worldRadius) {
+          image.data[pixel + 3] = 0;
+          continue;
+        }
+        const type = this.sampleType(wx, z);
+        const red = (type.color >> 16) & 255;
+        const green = (type.color >> 8) & 255;
+        const blue = type.color & 255;
+        const n = this.noise(wx * 0.22 + 14, z * 0.22 - 3) - 0.5;
+        image.data[pixel] = clamp(red + n * 36, 0, 255);
+        image.data[pixel + 1] = clamp(green + n * 36, 0, 255);
+        image.data[pixel + 2] = clamp(blue + n * 36, 0, 255);
+        image.data[pixel + 3] = 255;
+      }
+    }
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = canvas.width;
+    sourceCanvas.height = canvas.height;
+    sourceCanvas.getContext("2d").putImageData(image, 0, 0);
+    context.filter = "blur(2px)";
+    context.drawImage(sourceCanvas, 0, 0);
+    context.filter = "none";
+    this.texture = new THREE.CanvasTexture(canvas);
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.minFilter = THREE.LinearFilter;
+    this.texture.magFilter = THREE.LinearFilter;
+    this.texture.generateMipmaps = false;
+    this.texture.anisotropy = 1;
+    this.texture.userData.sharedProceduralAsset = true;
+    const geometry = new THREE.PlaneGeometry(this.fieldSize, this.fieldSize, 1, 1);
+    const material = new THREE.MeshStandardMaterial({
+      map: this.texture,
+      transparent: true,
+      alphaTest: 0.5,
+      roughness: 0.96,
+      metalness: 0,
+      depthWrite: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    this.ownedGeometries.push(geometry);
+    this.ownedMaterials.push(material);
+    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh.rotation.x = -Math.PI / 2;
+    this.mesh.position.y = 0.012;
+    this.mesh.renderOrder = 0;
+    this.sim.scene.add(this.mesh);
+    this.visuals.push(this.mesh);
+    this.addProps();
+  }
+
+  addProps() {
+    const density = (this.complexity === "high" ? 1.25 : this.complexity === "low" ? 0.58 : 0.85) * this.sim.quality.effectsQuality;
+    this.addInstancedProps("grass", Math.round(42 * density), new THREE.BoxGeometry(0.34, 0.035, 0.22), new THREE.MeshStandardMaterial({ color: 0x4f7d3f, roughness: 0.9 }));
+    this.addInstancedProps("leafLitter", Math.round(36 * density), new THREE.PlaneGeometry(0.58, 0.22), new THREE.MeshStandardMaterial({ color: 0x8b5a28, roughness: 0.88, side: THREE.DoubleSide }));
+    this.addInstancedProps("gravel", Math.round(58 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x8b8d83, roughness: 0.92 }));
+    this.addInstancedProps("pavement", Math.round(10 * density), new THREE.BoxGeometry(0.8, 0.05, 0.46), new THREE.MeshStandardMaterial({ color: 0x7f837c, roughness: 0.82 }));
+    this.addInstancedProps("root", Math.round(10 * density), new THREE.BoxGeometry(0.9, 0.08, 0.22), new THREE.MeshStandardMaterial({ color: 0x5e3b1c, roughness: 0.9 }));
+  }
+
+  addInstancedProps(typeId, count, geometry, material) {
+    this.ownedGeometries.push(geometry);
+    this.ownedMaterials.push(material);
+    const mesh = new THREE.InstancedMesh(geometry, material, count);
+    mesh.frustumCulled = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    let placed = 0;
+    for (let attempt = 0; attempt < count * 8 && placed < count; attempt += 1) {
+      const angle = this.random() * Math.PI * 2;
+      const radius = Math.sqrt(this.random()) * this.sim.worldRadius;
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      const type = this.sampleType(x, z);
+      if (type.id !== typeId) continue;
+      const h = this.sampleHeight(x, z);
+      this.dummy.position.set(x, 0.035 + Math.max(0, h) * 0.08, z);
+      if (typeId === "leafLitter") {
+        this.dummy.rotation.set(-Math.PI / 2, 0, this.random() * Math.PI * 2);
+      } else if (typeId === "gravel") {
+        this.dummy.rotation.set(this.random() * Math.PI, this.random() * Math.PI * 2, this.random() * Math.PI);
+      } else {
+        this.dummy.rotation.set(0, this.random() * Math.PI * 2, 0);
+      }
+      const s = 0.72 + this.random() * 0.7;
+      this.dummy.scale.set(s, s, s);
+      this.dummy.updateMatrix();
+      mesh.setMatrixAt(placed, this.dummy.matrix);
+      placed += 1;
+    }
+    mesh.count = placed;
+    mesh.instanceMatrix.needsUpdate = true;
+    this.sim.scene.add(mesh);
+    this.visuals.push(mesh);
   }
 }
 
@@ -1166,6 +1753,9 @@ class PheromoneFieldSystem {
     this.gridScratch = { gx: 0, gz: 0 };
     this.gradientScratch = { x: 0, z: 0 };
     this.antennaeScratch = { left: 0, right: 0, front: 0, peak: 0, turn: 0, strength: 0 };
+    this.terrainDecay = null;
+    this.terrainDiffusion = null;
+    this.terrainScratch = { decay: 1, diffusion: 1 };
 
     const size = this.resolution * this.resolution;
     for (const channel of PHEROMONE_FIELD_CHANNELS) {
@@ -1201,6 +1791,7 @@ class PheromoneFieldSystem {
     this.overlay.matrixAutoUpdate = false;
     this.overlay.updateMatrix();
     sim.scene.add(this.overlay);
+    this.refreshTerrainModifiers();
   }
 
   reset() {
@@ -1215,21 +1806,50 @@ class PheromoneFieldSystem {
     this.geometry?.dispose();
     this.material?.dispose();
     this.texture?.dispose();
+    this.terrainDecay = null;
+    this.terrainDiffusion = null;
     this.overlay = null;
     this.geometry = null;
     this.material = null;
     this.texture = null;
   }
 
+  refreshTerrainModifiers() {
+    const terrain = this.sim.terrain;
+    if (!terrain) {
+      this.terrainDecay = null;
+      this.terrainDiffusion = null;
+      return;
+    }
+    const size = this.resolution * this.resolution;
+    if (!this.terrainDecay || this.terrainDecay.length !== size) {
+      this.terrainDecay = new Float32Array(size);
+      this.terrainDiffusion = new Float32Array(size);
+    }
+    for (let gz = 0; gz < this.resolution; gz += 1) {
+      const z = (gz + 0.5) * this.cellSize - this.fieldRadius;
+      const row = gz * this.resolution;
+      for (let gx = 0; gx < this.resolution; gx += 1) {
+        const x = (gx + 0.5) * this.cellSize - this.fieldRadius;
+        const modifiers = terrain.samplePheromoneModifiers(x, z);
+        const index = row + gx;
+        this.terrainDecay[index] = modifiers.decay;
+        this.terrainDiffusion[index] = modifiers.diffusion;
+      }
+    }
+  }
+
   update(dt) {
     let changed = false;
     for (const channel of PHEROMONE_FIELD_CHANNELS) {
       const field = this.fields[channel];
-      const decayFactor = Math.exp(-PHEROMONE_FIELD_PARAMS[channel].decay * dt);
+      const decay = PHEROMONE_FIELD_PARAMS[channel].decay * dt;
+      const decayFactor = Math.max(0, 1 - decay);
+      const terrainDecay = this.terrainDecay;
       for (let i = 0; i < field.length; i += 1) {
         const value = field[i];
         if (value <= 0) continue;
-        const next = value * decayFactor;
+        const next = terrainDecay ? value * Math.max(0, 1 - decay * terrainDecay[i]) : value * decayFactor;
         field[i] = next < 0.0004 ? 0 : next;
         changed = true;
       }
@@ -1259,12 +1879,18 @@ class PheromoneFieldSystem {
     const r = this.resolution;
     const blend = clamp(amount, 0, 0.2);
     const keep = 1 - blend;
+    const terrainDiffusion = this.terrainDiffusion;
     scratch.set(field);
     for (let z = 1; z < r - 1; z += 1) {
       const row = z * r;
       for (let x = 1; x < r - 1; x += 1) {
         const i = row + x;
-        scratch[i] = field[i] * keep + (field[i - 1] + field[i + 1] + field[i - r] + field[i + r]) * blend * 0.25;
+        if (terrainDiffusion) {
+          const localBlend = clamp(amount * terrainDiffusion[i], 0, 0.2);
+          scratch[i] = field[i] * (1 - localBlend) + (field[i - 1] + field[i + 1] + field[i - r] + field[i + r]) * localBlend * 0.25;
+        } else {
+          scratch[i] = field[i] * keep + (field[i - 1] + field[i + 1] + field[i - r] + field[i + r]) * blend * 0.25;
+        }
       }
     }
     field.set(scratch);
@@ -1310,14 +1936,28 @@ class PheromoneFieldSystem {
   depositGaussian(channel, x, z, strength, radius) {
     const field = this.fields[channel];
     if (!field || strength <= 0 || radius <= 0) return;
+    let writeStrength = strength;
+    let writeRadius = radius;
+    const terrain = this.sim.terrain;
+    if (terrain?.effectsEnabled) {
+      const modifiers = terrain.samplePheromoneModifiers(x, z, this.terrainScratch);
+      const terrainType = terrain.sampleType(x, z);
+      writeStrength *= clamp(1 / modifiers.decay, 0.55, 1.45);
+      writeRadius *= clamp(modifiers.diffusion, 0.72, 1.35);
+      if (terrainType.id === "puddle") {
+        if (channel === "avoid") writeStrength *= 1.35;
+        else if (channel === "food" || channel === "trunk") writeStrength *= 0.2;
+      }
+    }
     const grid = this.worldToGrid(x, z);
-    const cellRadius = Math.ceil(radius * this.invCellSize) + 1;
+    const cellRadius = Math.ceil(writeRadius * this.invCellSize) + 1;
     const minX = clamp(Math.floor(grid.gx) - cellRadius, 0, this.resolution - 1);
     const maxX = clamp(Math.floor(grid.gx) + cellRadius, 0, this.resolution - 1);
     const minZ = clamp(Math.floor(grid.gz) - cellRadius, 0, this.resolution - 1);
     const maxZ = clamp(Math.floor(grid.gz) + cellRadius, 0, this.resolution - 1);
-    const sigma = Math.max(this.cellSize * 0.75, radius * 0.45);
+    const sigma = Math.max(this.cellSize * 0.75, writeRadius * 0.45);
     const sigma2 = sigma * sigma;
+    const radius2 = writeRadius * writeRadius;
 
     for (let gz = minZ; gz <= maxZ; gz += 1) {
       const wz = (gz + 0.5) * this.cellSize - this.fieldRadius;
@@ -1327,10 +1967,10 @@ class PheromoneFieldSystem {
         const wx = (gx + 0.5) * this.cellSize - this.fieldRadius;
         const dx = wx - x;
         const dist2Value = dx * dx + dz * dz;
-        if (dist2Value > radius * radius) continue;
+        if (dist2Value > radius2) continue;
         const falloff = Math.exp(-dist2Value / (2 * sigma2));
         const index = row + gx;
-        field[index] = Math.min(this.maxValue, field[index] + strength * falloff);
+        field[index] = Math.min(this.maxValue, field[index] + writeStrength * falloff);
       }
     }
     this.dirty = true;
@@ -1564,7 +2204,7 @@ class FoodSpawner {
     const amountScale = rand(0.78, 1.24);
     const radiusScale = rand(0.9, 1.15);
     const spawnRadius = (config.radiusBase + intensity * config.radiusPerIntensity) * radiusScale;
-    const point = this.findSpawnPoint(spawnRadius);
+    const point = this.findSpawnPoint(spawnRadius, config.category);
     if (!point) return false;
     this.sim.addFood(point.x, point.z, type, {
       source: "natural",
@@ -1576,9 +2216,11 @@ class FoodSpawner {
     return true;
   }
 
-  findSpawnPoint(spawnRadius) {
+  findSpawnPoint(spawnRadius, category = "mixed") {
     const usableRadius = this.sim.worldRadius - spawnRadius - 4;
     if (usableRadius <= this.sim.nest.radius + spawnRadius + 8) return null;
+    const terrainPoint = this.sim.terrain?.findSpawnPoint(category, spawnRadius, (x, z) => this.isClear(x, z, spawnRadius));
+    if (terrainPoint) return terrainPoint;
     for (let attempt = 0; attempt < 36; attempt += 1) {
       const angle = rand(0, Math.PI * 2);
       const radius = Math.sqrt(Math.random()) * usableRadius;
@@ -1592,6 +2234,7 @@ class FoodSpawner {
   isClear(x, z, spawnRadius) {
     if (Math.hypot(x, z) + spawnRadius > this.sim.worldRadius - 2) return false;
     if (distance2(x, z, this.sim.nest.x, this.sim.nest.z) < this.sim.nest.radius + spawnRadius + 10) return false;
+    if (this.sim.terrain?.isBlockedArea(x, z, spawnRadius)) return false;
     for (const food of this.sim.food) {
       if (distance2(x, z, food.x, food.z) < food.radius + spawnRadius + 8) return false;
     }
@@ -1639,6 +2282,7 @@ class Ant3D {
     this.lastTrail = rand(0, 1);
     this.homeTimer = rand(0, 8);
     this.rescueTarget = null;
+    this.trailFollowing = 0;
     this.prevX = this.x;
     this.prevZ = this.z;
     this.prevAngle = this.angle;
@@ -1650,6 +2294,9 @@ class Ant3D {
       closestFood: null,
       foodDistance: Infinity,
       foodScore: 0,
+      terrainDetection: 1,
+      terrainRoughness: 0,
+      terrainMovement: 1,
     };
     this.traits = {
       curiosity: rand(0.18, 1),
@@ -1720,6 +2367,7 @@ class Ant3D {
     this.wet = Math.max(0, this.wet - dt * 0.11);
     this.energy = clamp(this.energy + dt * 0.012, 0, 1);
     this.lastTrail += dt;
+    this.trailFollowing = Math.max(0, this.trailFollowing - dt * 2.4);
 
     const sensed = this.sense(sim);
     if (sensed.waterDepth > 0.08) {
@@ -1797,8 +2445,10 @@ class Ant3D {
       return;
     }
 
-    const angularNoise = rand(-HOMING_PARAMS.pathAngularNoise, HOMING_PARAMS.pathAngularNoise) + this.pathDrift * clamp(distance / 12, 0, 1.5);
-    const distanceScale = this.pathDistanceBias * (1 + rand(-HOMING_PARAMS.pathDistanceNoise, HOMING_PARAMS.pathDistanceNoise));
+    const terrainRoughness = sim.terrain?.sampleRoughness(this.x, this.z) ?? 0;
+    const terrainError = 1 + terrainRoughness * 0.85;
+    const angularNoise = (rand(-HOMING_PARAMS.pathAngularNoise, HOMING_PARAMS.pathAngularNoise) * terrainError) + this.pathDrift * clamp(distance / 12, 0, 1.5);
+    const distanceScale = this.pathDistanceBias * (1 + rand(-HOMING_PARAMS.pathDistanceNoise, HOMING_PARAMS.pathDistanceNoise) * terrainError);
     const sin = Math.sin(angularNoise);
     const cos = Math.cos(angularNoise);
     const estimatedDX = (dx * cos - dz * sin) * distanceScale;
@@ -1807,7 +2457,7 @@ class Ant3D {
     this.pathX += estimatedDX;
     this.pathZ += estimatedDZ;
     this.pathError = clamp(
-      this.pathError + distance * HOMING_PARAMS.pathErrorGain * (1 + Math.abs(angularNoise) * 10),
+      this.pathError + distance * HOMING_PARAMS.pathErrorGain * terrainError * (1 + Math.abs(angularNoise) * 10),
       0,
       HOMING_PARAMS.pathErrorMax,
     );
@@ -1892,10 +2542,16 @@ class Ant3D {
     }
 
     if (bestStrength > 0) {
+      this.trailFollowing = Math.max(this.trailFollowing, clamp(bestStrength * 1.6, 0, 1));
       const turnAngle = this.angle - bestTurn * 0.45;
       const gain = clamp(bestStrength, 0, 0.65) * 0.28;
       steering.x += Math.sin(turnAngle) * gain;
       steering.z += Math.cos(turnAngle) * gain;
+      const centerChannel = food.strength > trunk.strength ? "food" : "trunk";
+      const gradient = sim.pheromones.sampleGradient(centerChannel, this.x, this.z, this.fieldGradient);
+      const centerGain = clamp(bestStrength, 0, 0.8) * 1.05;
+      steering.x += gradient.x * centerGain;
+      steering.z += gradient.z * centerGain;
     }
 
     const avoidGradient = sim.pheromones.sampleGradient("avoid", this.x, this.z, this.fieldGradient);
@@ -1913,6 +2569,20 @@ class Ant3D {
     sensed.closestFood = null;
     sensed.foodDistance = Infinity;
     sensed.foodScore = 0;
+    const terrain = sim.terrain;
+    sensed.terrainDetection = terrain?.sampleDetectionMultiplier(this.x, this.z) ?? 1;
+    sensed.terrainRoughness = terrain?.sampleRoughness(this.x, this.z) ?? 0;
+    sensed.terrainMovement = terrain?.sampleMovementMultiplier(this.x, this.z) ?? 1;
+
+    if (terrain?.effectsEnabled) {
+      const terrainType = terrain.sampleType(this.x, this.z);
+      if (terrainType.id === "puddle") {
+        sensed.waterDepth = Math.max(sensed.waterDepth, 0.36);
+        sensed.alarm = Math.max(sensed.alarm, 0.18);
+      } else if (terrainType.id === "mud") {
+        sensed.waterDepth = Math.max(sensed.waterDepth, 0.08);
+      }
+    }
 
     for (const patch of sim.water) {
       const d = distance2(this.x, this.z, patch.x, patch.z);
@@ -1986,7 +2656,8 @@ class Ant3D {
       const quality = food.quality ?? 1;
       if (quality <= 0.08) continue;
       const affinity = config.roleAffinity[this.role] ?? 1;
-      const effectiveDetectRadius = config.detectRadius * (0.74 + this.traits.curiosity * 0.46) * (0.78 + quality * 0.22);
+      const terrainVision = sensed.terrainDetection * (1 - sensed.terrainRoughness * 0.18);
+      const effectiveDetectRadius = config.detectRadius * (0.74 + this.traits.curiosity * 0.46) * (0.78 + quality * 0.22) * terrainVision;
       if (d > effectiveDetectRadius) continue;
       const proximity = clamp(1 - d / effectiveDetectRadius, 0, 1);
       const amountFactor = clamp(food.amount / food.initialAmount, 0.15, 1) * quality;
@@ -2025,7 +2696,7 @@ class Ant3D {
       const quality = sensed.closestFood.quality ?? 1;
       const sourceRatio = clamp(sensed.closestFood.amount / sensed.closestFood.initialAmount, 0, 1);
       const affinity = config.roleAffinity[this.role] ?? 1;
-      const effectiveRange = config.detectRadius * (0.72 + this.traits.curiosity * 0.42);
+      const effectiveRange = config.detectRadius * (0.72 + this.traits.curiosity * 0.42) * (sensed.terrainDetection ?? 1);
       const strength =
         clamp(1 - sensed.foodDistance / effectiveRange, 0, 1) *
         config.directAttraction *
@@ -2040,6 +2711,7 @@ class Ant3D {
     if (sim.pheromones && this.role !== "guard") {
       const foodSignal = sim.pheromones.sampleAntennae("food", this.x, this.z, this.angle, this.foodAntennaeOptions);
       if (foodSignal.strength > 0) {
+        this.trailFollowing = Math.max(this.trailFollowing, clamp(foodSignal.strength * 1.8, 0, 1));
         const turnAngle = this.angle - foodSignal.turn * 0.85;
         const gain =
           clamp(foodSignal.strength, 0, 1.2) *
@@ -2048,14 +2720,23 @@ class Ant3D {
           (0.82 + this.traits.social * 0.28);
         steering.x += Math.sin(turnAngle) * gain;
         steering.z += Math.cos(turnAngle) * gain;
+        const gradient = sim.pheromones.sampleGradient("food", this.x, this.z, this.fieldGradient);
+        const centerGain = clamp(foodSignal.strength, 0, 1) * (1.6 + this.traits.social * 0.6);
+        steering.x += gradient.x * centerGain;
+        steering.z += gradient.z * centerGain;
       }
 
       const trunkSignal = sim.pheromones.sampleAntennae("trunk", this.x, this.z, this.angle, this.trunkAntennaeOptions);
       if (trunkSignal.strength > 0) {
+        this.trailFollowing = Math.max(this.trailFollowing, clamp(trunkSignal.strength * 1.4, 0, 0.82));
         const turnAngle = this.angle - trunkSignal.turn * 0.6;
         const gain = clamp(trunkSignal.strength, 0, 0.75) * PHEROMONE_PARAMS.foodFollowGain * (0.18 + this.traits.social * 0.16);
         steering.x += Math.sin(turnAngle) * gain;
         steering.z += Math.cos(turnAngle) * gain;
+        const gradient = sim.pheromones.sampleGradient("trunk", this.x, this.z, this.fieldGradient);
+        const centerGain = clamp(trunkSignal.strength, 0, 0.8) * (0.8 + this.traits.social * 0.45);
+        steering.x += gradient.x * centerGain;
+        steering.z += gradient.z * centerGain;
       }
     }
 
@@ -2082,9 +2763,10 @@ class Ant3D {
       return;
     }
 
-    this.wander += (Math.random() - 0.5) * dt * (2.3 + this.traits.curiosity * 3.2) + this.turnBias * dt;
-    steering.x += Math.sin(this.wander) * (0.58 + this.traits.curiosity * 0.5);
-    steering.z += Math.cos(this.wander) * (0.58 + this.traits.curiosity * 0.5);
+    const terrainNoise = 1 + (sensed.terrainRoughness ?? 0) * 0.72;
+    this.wander += (Math.random() - 0.5) * dt * (2.3 + this.traits.curiosity * 3.2) * terrainNoise + this.turnBias * dt;
+    steering.x += Math.sin(this.wander) * (0.58 + this.traits.curiosity * 0.5) * terrainNoise;
+    steering.z += Math.cos(this.wander) * (0.58 + this.traits.curiosity * 0.5) * terrainNoise;
 
     const homeDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z);
     if (homeDistance > sim.worldRadius * 0.72) {
@@ -2314,6 +2996,8 @@ class Ant3D {
     const rightX = Math.cos(this.angle);
     const rightZ = -Math.sin(this.angle);
     const orderlyState = this.state === "explore" || this.state === "harvest" || this.state === "return" || this.state === "searchNest";
+    const lineBias = clamp(this.trailFollowing, 0, 1);
+    const laneWidth = ANT_FORMATION_PARAMS.laneWidth * (1 - lineBias * 0.32);
     const gridSize = sim.antSpatialGridSize;
     const gridMax = gridSize - 1;
     const range = sim.antSpatialQueryRange;
@@ -2367,28 +3051,35 @@ class Ant3D {
           const absForward = Math.abs(forwardOffset);
           const absLateral = Math.abs(lateralOffset);
 
-          if (forwardOffset > 0 && forwardOffset < ANT_FORMATION_PARAMS.followGap && absLateral < ANT_FORMATION_PARAMS.laneWidth) {
-            const strength = (1 - forwardOffset / ANT_FORMATION_PARAMS.followGap) * (1 - absLateral / ANT_FORMATION_PARAMS.laneWidth) * 0.48;
+          if (forwardOffset > 0 && forwardOffset < ANT_FORMATION_PARAMS.followGap && absLateral < laneWidth) {
+            const strength = (1 - forwardOffset / ANT_FORMATION_PARAMS.followGap) * (1 - absLateral / laneWidth) * (0.46 + lineBias * 0.18);
             sx -= forwardX * strength;
             sz -= forwardZ * strength;
             count += 1;
           } else if (
             absForward < ANT_FORMATION_PARAMS.sideBySideForwardRange &&
-            absLateral > ANT_FORMATION_PARAMS.laneWidth &&
+            absLateral > laneWidth &&
             absLateral < ANT_FORMATION_PARAMS.personalRadius + 1.35
           ) {
             const sideSign = lateralOffset >= 0 ? 1 : -1;
             const orderSign = this.id > other.id ? -1 : 1;
             const sideBySideStrength =
               (1 - absForward / ANT_FORMATION_PARAMS.sideBySideForwardRange) *
-              (1 - (absLateral - ANT_FORMATION_PARAMS.laneWidth) / (ANT_FORMATION_PARAMS.personalRadius + 1.35 - ANT_FORMATION_PARAMS.laneWidth));
-            sx += rightX * sideSign * sideBySideStrength * 0.18 + forwardX * orderSign * sideBySideStrength * 0.34;
-            sz += rightZ * sideSign * sideBySideStrength * 0.18 + forwardZ * orderSign * sideBySideStrength * 0.34;
+              (1 - (absLateral - laneWidth) / (ANT_FORMATION_PARAMS.personalRadius + 1.35 - laneWidth));
+            const mergeGain = ANT_FORMATION_PARAMS.laneMergeGain + lineBias * 0.22;
+            const orderGain = ANT_FORMATION_PARAMS.queueOrderGain + lineBias * 0.18;
+            sx -= rightX * sideSign * sideBySideStrength * mergeGain;
+            sz -= rightZ * sideSign * sideBySideStrength * mergeGain;
+            sx += forwardX * orderSign * sideBySideStrength * orderGain;
+            sz += forwardZ * orderSign * sideBySideStrength * orderGain;
             count += 1;
           } else if (d < ANT_FORMATION_PARAMS.personalRadius) {
             const strength = (1 - d / ANT_FORMATION_PARAMS.personalRadius) * 0.24;
-            sx += awayX * strength;
-            sz += awayZ * strength;
+            const forwardRepel = awayX * forwardX + awayZ * forwardZ;
+            const lateralRepel = awayX * rightX + awayZ * rightZ;
+            const lateralGain = 1 - lineBias * 0.62;
+            sx += (forwardX * forwardRepel + rightX * lateralRepel * lateralGain) * strength;
+            sz += (forwardZ * forwardRepel + rightZ * lateralRepel * lateralGain) * strength;
             count += 1;
           }
         }
@@ -2401,6 +3092,26 @@ class Ant3D {
   }
 
   addObstacleAvoidance(steering, sim) {
+    const terrain = sim.terrain;
+    if (terrain?.effectsEnabled) {
+      const aheadDistance = 3.2;
+      const forwardX = Math.sin(this.angle);
+      const forwardZ = Math.cos(this.angle);
+      const aheadX = this.x + forwardX * aheadDistance;
+      const aheadZ = this.z + forwardZ * aheadDistance;
+      if (terrain.isBlocked(aheadX, aheadZ)) {
+        const rightX = Math.cos(this.angle);
+        const rightZ = -Math.sin(this.angle);
+        const leftBlocked = terrain.isBlocked(this.x - rightX * 2.8 + forwardX * 2.2, this.z - rightZ * 2.8 + forwardZ * 2.2);
+        const rightBlocked = terrain.isBlocked(this.x + rightX * 2.8 + forwardX * 2.2, this.z + rightZ * 2.8 + forwardZ * 2.2);
+        const side = leftBlocked && !rightBlocked ? 1 : rightBlocked && !leftBlocked ? -1 : this.turnBias >= 0 ? 1 : -1;
+        steering.x -= forwardX * 0.72;
+        steering.z -= forwardZ * 0.72;
+        steering.x += rightX * side * 0.88;
+        steering.z += rightZ * side * 0.88;
+      }
+    }
+
     for (const stone of sim.stones) {
       const d = distance2(this.x, this.z, stone.x, stone.z);
       if (d < stone.radius + 1.1) {
@@ -2446,10 +3157,22 @@ class Ant3D {
     if (this.state === "wet") speed *= 0.56;
     if (this.carrying > 0) speed *= getFoodType(this.carryingFoodType).carrySpeedMultiplier ?? 0.75;
     speed *= clamp(1 - this.wet * 0.3, 0.34, 1);
+    speed *= sim.terrain?.sampleMovementMultiplier(this.x, this.z) ?? 1;
     speed *= sim.timeScale;
 
-    this.x += Math.sin(this.angle) * speed * dt;
-    this.z += Math.cos(this.angle) * speed * dt;
+    let moveX = Math.sin(this.angle) * speed * dt;
+    let moveZ = Math.cos(this.angle) * speed * dt;
+    const nextX = this.x + moveX;
+    const nextZ = this.z + moveZ;
+    if (sim.terrain?.isBlocked(nextX, nextZ)) {
+      const side = this.turnBias >= 0 ? 1 : -1;
+      this.angle += side * dt * 2.8;
+      moveX *= -0.12;
+      moveZ *= -0.12;
+    }
+
+    this.x += moveX;
+    this.z += moveZ;
     this.keepInWorld(sim);
     this.updatePathIntegration(this.x - beforeX, this.z - beforeZ, sim);
   }
@@ -2729,8 +3452,8 @@ class AntColony3D {
     this.tool = "inspect";
     this.paused = false;
     this.timeScale = 1;
-    this.worldRadius = 156;
-    this.fieldMargin = 14;
+    this.worldRadius = 170;
+    this.fieldMargin = 0;
     this.nest = { x: -42, z: 12, radius: 12 };
     this.antSpatialCellSize = ANT_FORMATION_PARAMS.sameDirectionRadius;
     this.antSpatialInvCellSize = 1 / this.antSpatialCellSize;
@@ -2754,11 +3477,13 @@ class AntColony3D {
     this.lastUiUpdate = 0;
     this.resizeWidth = 0;
     this.resizeHeight = 0;
+    this.debugCursorX = NaN;
+    this.debugCursorZ = NaN;
 
     this.cameraTarget = new THREE.Vector3(this.nest.x * 0.55, 0, this.nest.z * 0.55);
     this.cameraRenderTarget = this.cameraTarget.clone();
     this.cameraYaw = -0.62;
-    this.cameraPitch = 1.05;
+    this.cameraPitch = 1.5;
     this.targetCameraYaw = this.cameraYaw;
     this.targetCameraPitch = this.cameraPitch;
     this.cameraDistance = this.getDefaultCameraDistance();
@@ -2772,6 +3497,7 @@ class AntColony3D {
     this.createSharedAssets();
     this.antRenderer = new AntRenderSystem(this, Number(ui.antCount.max));
     this.createWorld();
+    this.terrain = new TerrainSystem(this);
     this.pheromones = new PheromoneFieldSystem(this);
     this.bindEvents();
     this.debugPanel = new DebugPanel(this);
@@ -3036,6 +3762,21 @@ class AntColony3D {
       ui.naturalFoodRate.value = this.foodSpawner.rate;
       ui.naturalFoodRate.addEventListener("change", () => this.foodSpawner.setRate(ui.naturalFoodRate.value));
     }
+    if (ui.terrainEffectsToggle) {
+      ui.terrainEffectsToggle.checked = this.terrain?.effectsEnabled ?? true;
+      ui.terrainEffectsToggle.addEventListener("change", () => {
+        this.terrain?.setEffectsEnabled(ui.terrainEffectsToggle.checked);
+        this.pheromones?.refreshTerrainModifiers();
+      });
+    }
+    if (ui.terrainComplexity) {
+      ui.terrainComplexity.value = this.terrain?.complexity ?? "medium";
+      ui.terrainComplexity.addEventListener("change", () => {
+        this.terrain?.setComplexity(ui.terrainComplexity.value);
+        this.regenerateTerrain();
+      });
+    }
+    ui.terrainRegenerate?.addEventListener("click", () => this.regenerateTerrain());
 
     const canvas = this.renderer.domElement;
     this.input = new InputManager(this, canvas);
@@ -3052,6 +3793,13 @@ class AntColony3D {
   updateFoodTypeHint() {
     if (!ui.foodTypeHint) return;
     ui.foodTypeHint.textContent = getFoodType(this.activeFoodType).hint;
+  }
+
+  regenerateTerrain() {
+    this.terrain?.regenerate();
+    this.pheromones?.refreshTerrainModifiers();
+    this.reset();
+    ui.activeToolLabel.textContent = "地形を再生成";
   }
 
   reset() {
@@ -3179,6 +3927,7 @@ class AntColony3D {
   }
 
   updateGame(dt) {
+    this.terrain?.update(dt);
     this.foodSpawner?.update(dt);
     this.updateFoodSources(dt);
 
@@ -3340,6 +4089,7 @@ class AntColony3D {
       for (const item of list) this.disposeDynamicItem(item);
     }
     this.pheromones?.dispose();
+    this.terrain?.dispose();
     this.assetService.dispose();
     for (const geometry of this.sharedGeometries) geometry.dispose();
     for (const material of this.sharedMaterials) disposeMaterial(material);
@@ -3396,7 +4146,7 @@ class AntColony3D {
 
     if (this.tool === "inspect") {
       this.targetCameraYaw -= dx * 0.006;
-      this.targetCameraPitch = clamp(this.targetCameraPitch + dy * 0.004, 0.62, 1.28);
+      this.targetCameraPitch = clamp(this.targetCameraPitch + dy * 0.004, 0.62, 1.56);
       return;
     }
 
@@ -3442,6 +4192,8 @@ class AntColony3D {
     if (!hit) return null;
     const d = Math.hypot(hit.x, hit.z);
     if (d > this.worldRadius + this.fieldMargin) return null;
+    this.debugCursorX = hit.x;
+    this.debugCursorZ = hit.z;
     return { x: hit.x, z: hit.z };
   }
 
@@ -3573,6 +4325,13 @@ class AntColony3D {
     const config = getFoodType(type);
     const amount = (config.amountBase + intensity * config.amountPerIntensity) * (options.amountScale ?? 1);
     const radius = (config.radiusBase + intensity * config.radiusPerIntensity) * (options.radiusScale ?? 1);
+    const placement = this.resolveFoodPlacement(x, z, radius, options);
+    if (!placement) {
+      ui.activeToolLabel.textContent = "そこには置けません";
+      return null;
+    }
+    x = placement.x;
+    z = placement.z;
     const group = new THREE.Group();
     const item = {
       id: this.nextFoodId,
@@ -3613,6 +4372,15 @@ class AntColony3D {
     this.dynamicObjects.add(group);
     this.food.push(item);
     return item;
+  }
+
+  resolveFoodPlacement(x, z, radius, options = {}) {
+    if (Math.hypot(x, z) + radius > this.worldRadius - 2) return null;
+    if (distance2(x, z, this.nest.x, this.nest.z) < this.nest.radius + radius + 2 && options.source !== "natural") return { x, z };
+    const terrain = this.terrain;
+    if (!terrain?.effectsEnabled) return { x, z };
+    if (!terrain.isBlockedArea(x, z, radius)) return { x, z };
+    return terrain.findNearestOpenPoint(x, z, radius);
   }
 
   getFoodCrumbCount(config, item) {

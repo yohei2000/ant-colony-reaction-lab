@@ -489,24 +489,37 @@ select {
 }
 
 .natural-food-control,
-.food-spawn-rate-control {
+.food-spawn-rate-control,
+.terrain-effects-control,
+.terrain-complexity-control {
   grid-template-columns: 38px minmax(0, 1fr) 42px;
 }
 
-.natural-food-control input {
+.natural-food-control input,
+.terrain-effects-control input {
   justify-self: start;
   width: 18px;
   height: 18px;
 }
 
-.natural-food-control small {
+.natural-food-control small,
+.terrain-effects-control small {
   grid-column: 3;
   color: var(--muted);
   font-size: 0.67rem;
 }
 
-.food-spawn-rate-control select {
+.food-spawn-rate-control select,
+.terrain-complexity-control select {
   grid-column: 2 / 4;
+}
+
+.panel-action {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
 }
 
 .toolbelt {
