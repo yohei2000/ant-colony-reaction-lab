@@ -1021,6 +1021,99 @@ function makeBranchBumpTexture() {
   return texture;
 }
 
+function makeLeafLitterTexture({ base = "#a96b31", light = "#dfb071", dark = "#513117" } = {}) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 256;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.save();
+  context.translate(256, 128);
+
+  const makeLeafPath = () => {
+    context.beginPath();
+    context.moveTo(-238, 0);
+    context.bezierCurveTo(-176, -78, 92, -96, 238, 0);
+    context.bezierCurveTo(94, 92, -178, 78, -238, 0);
+    context.closePath();
+  };
+
+  makeLeafPath();
+  context.clip();
+  const gradient = context.createLinearGradient(-238, -80, 238, 96);
+  gradient.addColorStop(0, dark);
+  gradient.addColorStop(0.18, base);
+  gradient.addColorStop(0.58, light);
+  gradient.addColorStop(1, dark);
+  context.fillStyle = gradient;
+  context.fillRect(-256, -128, 512, 256);
+
+  for (let i = 0; i < 360; i += 1) {
+    const x = rand(-226, 226);
+    const y = rand(-88, 88);
+    const alpha = rand(0.035, 0.16);
+    context.fillStyle = Math.random() > 0.48 ? `rgba(45,25,13,${alpha})` : `rgba(245,213,154,${alpha})`;
+    context.beginPath();
+    context.ellipse(x, y, rand(1.2, 6.5), rand(0.8, 4.2), rand(-1.2, 1.2), 0, Math.PI * 2);
+    context.fill();
+  }
+
+  context.lineCap = "round";
+  context.strokeStyle = "rgba(66,34,14,0.56)";
+  context.lineWidth = 4.8;
+  context.beginPath();
+  context.moveTo(-228, 2);
+  for (let x = -186; x <= 226; x += 44) context.lineTo(x, Math.sin(x * 0.025) * 5);
+  context.stroke();
+
+  context.strokeStyle = "rgba(239,197,124,0.28)";
+  context.lineWidth = 1.8;
+  context.beginPath();
+  context.moveTo(-220, -3);
+  context.lineTo(228, -6);
+  context.stroke();
+
+  for (let side = -1; side <= 1; side += 2) {
+    for (let i = 0; i < 11; i += 1) {
+      const x = -176 + i * 37;
+      const veinLength = 28 + i * 3.4 + rand(-5, 7);
+      const y = Math.sin(x * 0.03) * 3;
+      context.strokeStyle = i % 2 === 0 ? "rgba(74,39,16,0.36)" : "rgba(244,204,132,0.25)";
+      context.lineWidth = rand(1.2, 2.2);
+      context.beginPath();
+      context.moveTo(x, y);
+      context.quadraticCurveTo(x + 17, y + side * 8, x + veinLength, y + side * (22 + i * 1.7));
+      context.stroke();
+    }
+  }
+
+  context.globalCompositeOperation = "destination-out";
+  for (let i = 0; i < 15; i += 1) {
+    context.fillStyle = `rgba(0,0,0,${rand(0.18, 0.45)})`;
+    context.beginPath();
+    context.ellipse(rand(-205, 200), rand(-72, 72), rand(2.2, 7), rand(1.4, 5), rand(-0.8, 0.8), 0, Math.PI * 2);
+    context.fill();
+  }
+  context.globalCompositeOperation = "source-over";
+  context.restore();
+
+  context.save();
+  context.translate(256, 128);
+  makeLeafPath();
+  context.strokeStyle = "rgba(45,24,10,0.48)";
+  context.lineWidth = 4;
+  context.stroke();
+  context.restore();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = true;
+  texture.anisotropy = 4;
+  return texture;
+}
+
 function makeFoodTexture(textureKey) {
   const spec = FOOD_TEXTURE_MANIFEST[textureKey] ?? FOOD_TEXTURE_MANIFEST.bread;
   const canvas = document.createElement("canvas");
@@ -1802,13 +1895,53 @@ class TerrainSystem {
 
   addProps() {
     const density = (this.complexity === "high" ? 1.9 : this.complexity === "low" ? 0.42 : 1) * this.sim.quality.effectsQuality;
+    const dryLeafMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: makeLeafLitterTexture({ base: "#a8682c", light: "#dfb274", dark: "#4f2c12" }),
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+      alphaTest: 0.22,
+    });
+    const paleLeafMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: makeLeafLitterTexture({ base: "#b98a45", light: "#e8c68b", dark: "#63411d" }),
+      roughness: 0.92,
+      side: THREE.DoubleSide,
+      alphaTest: 0.22,
+    });
+    const barkMap = this.sim.assetService.get("branchBarkTexture");
+    const barkBump = this.sim.assetService.get("branchBumpTexture");
+    const twigMaterial = new THREE.MeshStandardMaterial({
+      color: 0x8a5b2c,
+      map: barkMap,
+      bumpMap: barkBump,
+      bumpScale: 0.16,
+      roughness: 0.94,
+    });
+    const darkTwigMaterial = new THREE.MeshStandardMaterial({
+      color: 0x70451e,
+      map: barkMap,
+      bumpMap: barkBump,
+      bumpScale: 0.24,
+      roughness: 0.97,
+    });
     this.addInstancedProps("grassTuft", "grass", Math.round(420 * density), new THREE.ConeGeometry(0.08, 0.7, 4, 1), new THREE.MeshStandardMaterial({ color: 0x547d3d, roughness: 0.92 }), { yOffset: 0.28, minScale: 0.65, maxScale: 1.28, upright: true, tilt: 0.28, colorJitter: 0.05 });
-    this.addInstancedProps("leafFlake", "leafLitter", Math.round(300 * density), createCurledLeafGeometry(), new THREE.MeshStandardMaterial({ color: 0x9a612a, roughness: 0.9, side: THREE.DoubleSide }), { yOffset: 0.12, minScale: 0.68, maxScale: 1.52, flat: true, tilt: 0.46, stretchX: 1.36, stretchZ: 0.96, colorJitter: 0.12 });
+    this.addInstancedProps("leafFlake", "leafLitter", Math.round(360 * density), createCurledLeafGeometry(1.45, 0.62, 8, 3), dryLeafMaterial, { yOffset: 0.13, minScale: 0.8, maxScale: 1.7, flat: true, tilt: 0.52, stretchX: 1.28, stretchZ: 1.0 });
     this.addInstancedProps("pebble", "gravel", Math.round(250 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x85867e, roughness: 0.94 }), { yOffset: 0.08, minScale: 0.62, maxScale: 1.55, tumble: true, stretchY: 0.58 });
     this.addRootProps(Math.round(76 * density), Math.round(28 * density));
-    this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(118 * density), new THREE.CylinderGeometry(0.045, 0.072, 1.15, 7, 1), new THREE.MeshStandardMaterial({ color: 0x5f3b1d, roughness: 0.94 }), { yOffset: 0.14, minScale: 0.66, maxScale: 1.45, layCylinder: true, liftVariance: 0.12, stretchY: 1.58, stretchX: 0.92, stretchZ: 0.92, colorJitter: 0.08 });
-    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(70 * density), createCurledLeafGeometry(1.55, 0.72, 9, 3), new THREE.MeshStandardMaterial({ color: 0xa56a2f, roughness: 0.88, side: THREE.DoubleSide }), { yOffset: 0.16, minScale: 0.72, maxScale: 1.55, flat: true, tilt: 0.62, stretchX: 1.18, stretchZ: 0.98, colorJitter: 0.16, castShadow: true });
-    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(46 * density), new THREE.CylinderGeometry(0.07, 0.1, 2.1, 7, 1), new THREE.MeshStandardMaterial({ color: 0x63401f, roughness: 0.95 }), { yOffset: 0.2, minScale: 0.72, maxScale: 1.35, layCylinder: true, liftVariance: 0.1, stretchY: 1.48, stretchX: 0.92, stretchZ: 0.92, colorJitter: 0.08, castShadow: true });
+    this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(170 * density), new THREE.CylinderGeometry(0.045, 0.072, 1.35, 7, 1), twigMaterial, { yOffset: 0.16, minScale: 0.74, maxScale: 1.55, layCylinder: true, liftVariance: 0.12, stretchY: 1.72, stretchX: 0.94, stretchZ: 0.94, colorJitter: 0.05 });
+    this.addInstancedProps("pineNeedle", ["leafLitter", "soil", "grass"], Math.round(260 * density), new THREE.CylinderGeometry(0.012, 0.018, 1.85, 5, 1), new THREE.MeshStandardMaterial({ color: 0xa88347, roughness: 0.96 }), { yOffset: 0.105, minScale: 0.62, maxScale: 1.55, layCylinder: true, liftVariance: 0.045, stretchY: 1.35, stretchX: 0.75, stretchZ: 0.75, colorJitter: 0.08 });
+    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(96 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.18, minScale: 0.78, maxScale: 1.65, flat: true, tilt: 0.68, stretchX: 1.16, stretchZ: 1.0, castShadow: true });
+    this.addInstancedProps("largeFallenLeaf", ["leafLitter", "grass", "soil"], Math.round(44 * density), createCurledLeafGeometry(5.4, 2.35, 14, 5), new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: makeLeafLitterTexture({ base: "#9b5324", light: "#d59350", dark: "#3f2110" }),
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+      alphaTest: 0.24,
+    }), { yOffset: 0.24, minScale: 0.72, maxScale: 1.34, flat: true, tilt: 0.82, stretchX: 1.05, stretchZ: 1.0, castShadow: true });
+    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(64 * density), new THREE.CylinderGeometry(0.08, 0.12, 2.35, 8, 1), darkTwigMaterial, { yOffset: 0.24, minScale: 0.78, maxScale: 1.42, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, colorJitter: 0.05, castShadow: true });
+    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(22 * density), new THREE.CylinderGeometry(0.15, 0.23, 4.2, 10, 2), darkTwigMaterial.clone(), { yOffset: 0.36, minScale: 0.72, maxScale: 1.25, layCylinder: true, liftVariance: 0.08, stretchY: 1.65, stretchX: 1.0, stretchZ: 1.0, colorJitter: 0.04, castShadow: true });
+    this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("barkChip", ["root", "leafLitter"], Math.round(84 * density), createBarkShardGeometry(), new THREE.MeshStandardMaterial({ color: 0x70411e, roughness: 0.96, flatShading: true }), { yOffset: 0.13, minScale: 0.66, maxScale: 1.38, lowShard: true, tilt: 0.48, stretchX: 1.22, stretchY: 1.08, stretchZ: 0.94, colorJitter: 0.1 });
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(72 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0x7e827b, roughness: 0.86 }), { yOffset: 0.055, minScale: 0.72, maxScale: 1.5, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
     this.addInstancedProps("mudClump", "mud", Math.round(86 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x3f3325, roughness: 0.98 }), { yOffset: 0.045, minScale: 0.72, maxScale: 1.6, tumble: true, stretchY: 0.36 });
@@ -1894,6 +2027,100 @@ class TerrainSystem {
     this.propInstanceCount += placed;
     this.sim.scene.add(mesh);
     this.visuals.push(mesh);
+  }
+
+  addFeaturedClutter(leafMaterial, branchMaterial) {
+    const nest = this.sim.nest;
+    const leafGeometry = createCurledLeafGeometry(14.2, 6.2, 18, 7);
+    const branchGeometry = new THREE.CylinderGeometry(1, 1, 1, 12, 3);
+    const shadowGeometry = new THREE.CircleGeometry(1, 32);
+    const shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x1b1108, transparent: true, opacity: 0.18, depthWrite: false });
+    this.ownedGeometries.push(leafGeometry, branchGeometry, shadowGeometry);
+    this.ownedMaterials.push(shadowMaterial);
+
+    const leafSpecs = [
+      { x: 28, z: -32, yaw: 0.72, scale: 1.02, tilt: 0.48 },
+      { x: 52, z: 12, yaw: -0.38, scale: 0.82, tilt: -0.42 },
+      { x: 10, z: 52, yaw: 1.45, scale: 0.9, tilt: 0.38 },
+      { x: -38, z: 34, yaw: -1.12, scale: 0.74, tilt: 0.32 },
+      { x: 72, z: -28, yaw: 2.2, scale: 0.68, tilt: -0.46 },
+      { x: -22, z: -48, yaw: -2.35, scale: 0.8, tilt: 0.42 },
+    ];
+    const leafMesh = new THREE.InstancedMesh(leafGeometry, leafMaterial, leafSpecs.length);
+    leafMesh.name = "terrain-featuredLeaves";
+    leafMesh.frustumCulled = true;
+    leafMesh.castShadow = this.sim.quality.shadowQuality !== "off";
+    leafMesh.receiveShadow = false;
+    for (let i = 0; i < leafSpecs.length; i += 1) {
+      const spec = leafSpecs[i];
+      const x = nest.x + spec.x;
+      const z = nest.z + spec.z;
+      this.dummy.position.set(x, this.sampleHeight(x, z) + 0.46, z);
+      this.dummy.rotation.set(-Math.PI / 2 + spec.tilt, spec.tilt * 0.28, spec.yaw);
+      this.dummy.scale.setScalar(spec.scale);
+      this.dummy.updateMatrix();
+      leafMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    leafMesh.instanceMatrix.needsUpdate = true;
+    this.propInstanceCount += leafSpecs.length;
+    this.sim.scene.add(leafMesh);
+    this.visuals.push(leafMesh);
+
+    const branchSpecs = [
+      { x: 22, z: -54, yaw: 0.52, length: 12.6, radius: 0.26, slope: 0.035 },
+      { x: 66, z: 34, yaw: -1.1, length: 14.2, radius: 0.3, slope: -0.02 },
+      { x: -44, z: -18, yaw: 1.42, length: 9.8, radius: 0.2, slope: 0.025 },
+      { x: 8, z: 66, yaw: 2.48, length: 10.6, radius: 0.22, slope: 0.015 },
+      { x: 78, z: -8, yaw: -2.55, length: 8.8, radius: 0.18, slope: -0.018 },
+    ];
+    const branchMesh = new THREE.InstancedMesh(branchGeometry, branchMaterial, branchSpecs.length);
+    branchMesh.name = "terrain-featuredBranches";
+    branchMesh.frustumCulled = true;
+    branchMesh.castShadow = this.sim.quality.shadowQuality !== "off";
+    branchMesh.receiveShadow = false;
+    for (let i = 0; i < branchSpecs.length; i += 1) {
+      const spec = branchSpecs[i];
+      const x = nest.x + spec.x;
+      const z = nest.z + spec.z;
+      this.propDirection.set(Math.sin(spec.yaw), spec.slope, Math.cos(spec.yaw)).normalize();
+      this.dummy.position.set(x, this.sampleHeight(x, z) + spec.radius * 2.25, z);
+      this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
+      this.dummy.scale.set(spec.radius, spec.length, spec.radius * 0.78);
+      this.dummy.updateMatrix();
+      branchMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    branchMesh.instanceMatrix.needsUpdate = true;
+    this.propInstanceCount += branchSpecs.length;
+    this.sim.scene.add(branchMesh);
+    this.visuals.push(branchMesh);
+
+    const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, leafSpecs.length + branchSpecs.length);
+    shadowMesh.name = "terrain-featuredContactShadows";
+    shadowMesh.frustumCulled = true;
+    shadowMesh.renderOrder = 1;
+    for (let i = 0; i < leafSpecs.length; i += 1) {
+      const spec = leafSpecs[i];
+      const x = nest.x + spec.x;
+      const z = nest.z + spec.z;
+      this.dummy.position.set(x, this.sampleHeight(x, z) + 0.045, z);
+      this.dummy.rotation.set(-Math.PI / 2, 0, spec.yaw);
+      this.dummy.scale.set(spec.scale * 6.1, spec.scale * 2.35, 1);
+      this.dummy.updateMatrix();
+      shadowMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    for (let i = 0; i < branchSpecs.length; i += 1) {
+      const spec = branchSpecs[i];
+      const x = nest.x + spec.x;
+      const z = nest.z + spec.z;
+      this.dummy.position.set(x, this.sampleHeight(x, z) + 0.048, z);
+      this.dummy.rotation.set(-Math.PI / 2, 0, spec.yaw);
+      this.dummy.scale.set(spec.length * 0.54, spec.radius * 2.8, 1);
+      this.dummy.updateMatrix();
+      shadowMesh.setMatrixAt(leafSpecs.length + i, this.dummy.matrix);
+    }
+    shadowMesh.instanceMatrix.needsUpdate = true;
+    this.sim.scene.add(shadowMesh);
+    this.visuals.push(shadowMesh);
   }
 
   addRootProps(segmentCount, knotCount) {
@@ -3731,7 +3958,7 @@ class AntColony3D {
     this.cameraTarget = new THREE.Vector3(this.nest.x * 0.55, 0, this.nest.z * 0.55);
     this.cameraRenderTarget = this.cameraTarget.clone();
     this.cameraYaw = -0.62;
-    this.cameraPitch = 1.38;
+    this.cameraPitch = window.innerWidth < 680 ? 1.26 : 1.18;
     this.targetCameraYaw = this.cameraYaw;
     this.targetCameraPitch = this.cameraPitch;
     this.cameraDistance = this.getDefaultCameraDistance();
@@ -4115,7 +4342,7 @@ class AntColony3D {
   }
 
   getDefaultCameraDistance() {
-    return window.innerWidth < 680 ? this.worldRadius * 1.85 : this.worldRadius * 1.74;
+    return window.innerWidth < 680 ? this.worldRadius * 1.96 : this.worldRadius * 1.86;
   }
 
   resize() {
