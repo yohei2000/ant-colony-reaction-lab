@@ -957,17 +957,17 @@ function makeBranchBarkTexture() {
   canvas.height = 192;
   const context = canvas.getContext("2d");
   const gradient = context.createLinearGradient(0, 0, 512, 192);
-  gradient.addColorStop(0, "#8b5e30");
-  gradient.addColorStop(0.38, "#bd8650");
-  gradient.addColorStop(0.72, "#9c6630");
-  gradient.addColorStop(1, "#d39b5c");
+  gradient.addColorStop(0, "#8f8069");
+  gradient.addColorStop(0.38, "#b5a283");
+  gradient.addColorStop(0.72, "#9a866b");
+  gradient.addColorStop(1, "#c7b28d");
   context.fillStyle = gradient;
   context.fillRect(0, 0, 512, 192);
 
   for (let i = 0; i < 90; i += 1) {
     const y = Math.random() * 192;
     const alpha = rand(0.1, 0.34);
-    context.strokeStyle = Math.random() > 0.45 ? `rgba(103,60,29,${alpha * 0.64})` : `rgba(245,191,115,${alpha * 0.7})`;
+    context.strokeStyle = Math.random() > 0.45 ? `rgba(104,89,70,${alpha * 0.44})` : `rgba(220,199,155,${alpha * 0.6})`;
     context.lineWidth = rand(0.6, 2.4);
     context.beginPath();
     context.moveTo(0, y);
@@ -980,11 +980,11 @@ function makeBranchBarkTexture() {
   for (let i = 0; i < 28; i += 1) {
     const x = Math.random() * 512;
     const y = Math.random() * 192;
-    context.fillStyle = "rgba(112,66,33,0.18)";
+    context.fillStyle = "rgba(108,92,72,0.12)";
     context.beginPath();
     context.ellipse(x, y, rand(5, 18), rand(2, 7), rand(-0.6, 0.6), 0, Math.PI * 2);
     context.fill();
-    context.strokeStyle = "rgba(202,132,65,0.24)";
+    context.strokeStyle = "rgba(204,181,137,0.18)";
     context.stroke();
   }
 
@@ -1229,6 +1229,113 @@ function createCurledLeafGeometry(width = 0.92, length = 0.38, widthSegments = 7
     position.setY(i, y * taper);
     position.setZ(i, centerLift + curledEdge + midrib);
   }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function appendBranchTube(vertices, uvs, indices, pathFn, radiusFn, radialSegments, lengthSegments) {
+  const startIndex = vertices.length / 3;
+  const up = new THREE.Vector3(0, 1, 0);
+  const side = new THREE.Vector3(1, 0, 0);
+  const center = new THREE.Vector3();
+  const previous = new THREE.Vector3();
+  const next = new THREE.Vector3();
+  const tangent = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  const binormal = new THREE.Vector3();
+
+  for (let ring = 0; ring <= lengthSegments; ring += 1) {
+    const t = ring / lengthSegments;
+    pathFn(t, center);
+    pathFn(Math.max(0, t - 1 / lengthSegments), previous);
+    pathFn(Math.min(1, t + 1 / lengthSegments), next);
+    tangent.subVectors(next, previous).normalize();
+    normal.crossVectors(tangent, up);
+    if (normal.lengthSq() < 0.0001) normal.crossVectors(tangent, side);
+    normal.normalize();
+    binormal.crossVectors(tangent, normal).normalize();
+
+    const radius = radiusFn(t);
+    const rib = 1 + Math.sin(t * Math.PI * 8.4) * 0.035;
+    for (let segment = 0; segment < radialSegments; segment += 1) {
+      const angle = (segment / radialSegments) * Math.PI * 2;
+      const ringNoise = 1 + Math.sin(segment * 2.1 + ring * 0.76) * 0.045;
+      const oval = 0.88 + Math.sin(t * Math.PI * 3.2) * 0.05;
+      const nx = Math.cos(angle) * radius * ringNoise * rib;
+      const nz = Math.sin(angle) * radius * ringNoise * rib * oval;
+      vertices.push(
+        center.x + normal.x * nx + binormal.x * nz,
+        center.y + normal.y * nx + binormal.y * nz,
+        center.z + normal.z * nx + binormal.z * nz,
+      );
+      uvs.push(segment / radialSegments, t);
+    }
+  }
+
+  for (let ring = 0; ring < lengthSegments; ring += 1) {
+    for (let segment = 0; segment < radialSegments; segment += 1) {
+      const a = startIndex + ring * radialSegments + segment;
+      const b = startIndex + ring * radialSegments + ((segment + 1) % radialSegments);
+      const c = startIndex + (ring + 1) * radialSegments + segment;
+      const d = startIndex + (ring + 1) * radialSegments + ((segment + 1) % radialSegments);
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+}
+
+function createBroadleafBranchGeometry(length = 1, baseRadius = 0.08, tipRadius = 0.04, options = {}) {
+  const radialSegments = options.radialSegments ?? 9;
+  const lengthSegments = options.lengthSegments ?? 12;
+  const bendX = options.bendX ?? 0.11;
+  const bendZ = options.bendZ ?? 0.045;
+  const vertices = [];
+  const uvs = [];
+  const indices = [];
+
+  const mainPath = (t, target) => {
+    const sway = Math.sin(t * Math.PI);
+    target.set(
+      (sway * bendX + Math.sin(t * Math.PI * 2.35 + 0.8) * bendX * 0.24) * length,
+      (t - 0.5) * length,
+      Math.sin(t * Math.PI * 1.7 + 0.55) * bendZ * length,
+    );
+  };
+  const mainRadius = (t) => {
+    const taper = baseRadius + (tipRadius - baseRadius) * Math.pow(t, 0.82);
+    const nodeBump = Math.exp(-Math.pow((t - 0.32) / 0.055, 2)) * 0.18 + Math.exp(-Math.pow((t - 0.68) / 0.07, 2)) * 0.14;
+    return taper * (1 + nodeBump);
+  };
+
+  appendBranchTube(vertices, uvs, indices, mainPath, mainRadius, radialSegments, lengthSegments);
+
+  if (options.forked) {
+    const makeFork = (anchorT, sideSign, forkLength, forkRadius) => {
+      const start = new THREE.Vector3();
+      mainPath(anchorT, start);
+      appendBranchTube(
+        vertices,
+        uvs,
+        indices,
+        (t, target) => {
+          target.set(
+            start.x + sideSign * Math.sin(t * Math.PI * 0.72) * forkLength * 0.48,
+            start.y + t * forkLength,
+            start.z + Math.sin(t * Math.PI) * forkLength * 0.08,
+          );
+        },
+        (t) => forkRadius * (1 - t * 0.62),
+        Math.max(6, radialSegments - 2),
+        Math.max(5, Math.round(lengthSegments * 0.45)),
+      );
+    };
+    makeFork(0.34, 1, length * 0.24, baseRadius * 0.48);
+    makeFork(0.62, -1, length * 0.19, baseRadius * 0.36);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
 }
@@ -1913,14 +2020,14 @@ class TerrainSystem {
     const barkMap = this.sim.assetService.get("branchBarkTexture");
     const barkBump = this.sim.assetService.get("branchBumpTexture");
     const twigMaterial = new THREE.MeshStandardMaterial({
-      color: 0xe2aa61,
+      color: 0xb8a586,
       map: barkMap,
       bumpMap: barkBump,
       bumpScale: 0.16,
       roughness: 0.94,
     });
     const darkTwigMaterial = new THREE.MeshStandardMaterial({
-      color: 0xf0b76d,
+      color: 0xa28e71,
       map: barkMap,
       bumpMap: barkBump,
       bumpScale: 0.24,
@@ -1933,7 +2040,7 @@ class TerrainSystem {
     this.addInstancedProps("largeStone", ["soil", "gravel", "sand", "path"], Math.round(5 * density), new THREE.DodecahedronGeometry(0.95, 0), new THREE.MeshStandardMaterial({ color: 0x9b9789, roughness: 0.94, flatShading: true }), { yOffset: 2.6, minScale: 3.2, maxScale: 8.4, tumble: true, stretchY: 0.42, stretchX: 1.18, stretchZ: 0.92, colorJitter: 0.04, castShadow: true });
     this.addFeaturedRocks();
     this.addRootProps(Math.round(15 * density), Math.round(6 * density));
-    this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(16 * density), new THREE.CylinderGeometry(0.045, 0.072, 1.35, 7, 1), twigMaterial, { yOffset: 1.0, minScale: 6.5, maxScale: 17.0, layCylinder: true, liftVariance: 0.12, stretchY: 1.72, stretchX: 0.94, stretchZ: 0.94, colorJitter: 0.05 });
+    this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(16 * density), createBroadleafBranchGeometry(1.35, 0.066, 0.034, { radialSegments: 8, lengthSegments: 10, bendX: 0.14, bendZ: 0.055 }), twigMaterial, { yOffset: 1.0, minScale: 6.5, maxScale: 17.0, layCylinder: true, liftVariance: 0.12, stretchY: 1.72, stretchX: 0.94, stretchZ: 0.94, colorJitter: 0.04 });
     this.addInstancedProps("pineNeedle", ["leafLitter", "soil", "grass"], Math.round(17 * density), new THREE.CylinderGeometry(0.012, 0.018, 1.85, 5, 1), new THREE.MeshStandardMaterial({ color: 0xc69b55, roughness: 0.96 }), { yOffset: 0.42, minScale: 12.0, maxScale: 26.0, layCylinder: true, liftVariance: 0.045, stretchY: 1.35, stretchX: 0.95, stretchZ: 0.95, colorJitter: 0.08 });
     this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.26, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, castShadow: true });
     this.addInstancedProps("largeFallenLeaf", ["leafLitter", "grass", "soil"], Math.round(6 * density), createCurledLeafGeometry(5.4, 2.35, 14, 5), new THREE.MeshStandardMaterial({
@@ -1943,8 +2050,8 @@ class TerrainSystem {
       side: THREE.DoubleSide,
       alphaTest: 0.24,
     }), { yOffset: 0.42, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, castShadow: true });
-    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), new THREE.CylinderGeometry(0.08, 0.12, 2.35, 8, 1), darkTwigMaterial, { yOffset: 1.1, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, colorJitter: 0.05, castShadow: true });
-    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), new THREE.CylinderGeometry(0.22, 0.36, 6.8, 10, 2), darkTwigMaterial.clone(), { yOffset: 1.62, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, colorJitter: 0.04, castShadow: true });
+    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.1, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, colorJitter: 0.035, castShadow: true });
+    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 1.62, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, colorJitter: 0.03, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("barkChip", ["root", "leafLitter"], Math.round(13 * density), createBarkShardGeometry(), new THREE.MeshStandardMaterial({ color: 0xc1844a, roughness: 0.96, flatShading: true }), { yOffset: 0.46, minScale: 4.5, maxScale: 13.0, lowShard: true, tilt: 0.48, stretchX: 1.22, stretchY: 1.08, stretchZ: 0.94, colorJitter: 0.1 });
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(9 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0xa7aba2, roughness: 0.86 }), { yOffset: 0.12, minScale: 3.0, maxScale: 8.2, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
@@ -2068,7 +2175,7 @@ class TerrainSystem {
   addFeaturedClutter(leafMaterial, branchMaterial) {
     const nest = this.sim.nest;
     const leafGeometry = createCurledLeafGeometry(14.2, 6.2, 18, 7);
-    const branchGeometry = new THREE.CylinderGeometry(1, 1, 1, 12, 3);
+    const branchGeometry = createBroadleafBranchGeometry(58, 0.82, 0.34, { radialSegments: 12, lengthSegments: 22, bendX: 0.18, bendZ: 0.06, forked: true });
     const shadowGeometry = new THREE.CircleGeometry(1, 32);
     const shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x1b1108, transparent: true, opacity: 0.18, depthWrite: false });
     this.ownedGeometries.push(leafGeometry, branchGeometry, shadowGeometry);
@@ -2113,7 +2220,7 @@ class TerrainSystem {
       this.propDirection.set(Math.sin(spec.yaw), spec.slope, Math.cos(spec.yaw)).normalize();
       this.dummy.position.set(x, this.sampleHeight(x, z) + spec.radius * 2.25, z);
       this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
-      this.dummy.scale.set(spec.radius, spec.length, spec.radius * 0.78);
+      this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
       branchMesh.setMatrixAt(i, this.dummy.matrix);
     }
@@ -4072,21 +4179,21 @@ class AntColony3D {
       food: new THREE.MeshStandardMaterial({ color: 0xd9a63f, roughness: 0.62 }),
       stone: new THREE.MeshStandardMaterial({ color: 0x777c75, roughness: 0.86 }),
       branch: new THREE.MeshStandardMaterial({
-        color: 0xe2aa61,
+        color: 0xb8a586,
         map: this.assetService.get("branchBarkTexture"),
         bumpMap: this.assetService.get("branchBumpTexture"),
         bumpScale: 0.18,
         roughness: 0.94,
       }),
       branchDark: new THREE.MeshStandardMaterial({
-        color: 0xf0b76d,
+        color: 0xa28e71,
         map: this.assetService.get("branchBarkTexture"),
         bumpMap: this.assetService.get("branchBumpTexture"),
         bumpScale: 0.24,
         roughness: 0.98,
       }),
       branchTip: new THREE.MeshStandardMaterial({
-        color: 0xc38644,
+        color: 0xc7b28d,
         map: this.assetService.get("branchBarkTexture"),
         bumpMap: this.assetService.get("branchBumpTexture"),
         bumpScale: 0.12,
