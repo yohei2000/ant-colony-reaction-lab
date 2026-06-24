@@ -1726,18 +1726,7 @@ class TerrainSystem {
         this.moisture[index] = clamp((type === TERRAIN_TYPES.mud ? 0.72 : type === TERRAIN_TYPES.puddle ? 1 : 0.18 + broadNoise * 0.32), 0, 1);
         this.roughness[index] = clamp(type.roughness + fineNoise * 0.12, 0, 1);
 
-        let terrainHeight = (broadNoise - 0.5) * 0.62 + (fineNoise - 0.5) * 0.18;
-        if (nestDistance < safeRadius) terrainHeight *= 0.16;
-        if (type === TERRAIN_TYPES.path) terrainHeight *= 0.36;
-        else if (type === TERRAIN_TYPES.pavement) terrainHeight = terrainHeight * 0.22 + 0.1;
-        else if (type === TERRAIN_TYPES.grass) terrainHeight += 0.16;
-        else if (type === TERRAIN_TYPES.leafLitter) terrainHeight += 0.08 + fineNoise * 0.14;
-        else if (type === TERRAIN_TYPES.gravel) terrainHeight += (fineNoise - 0.3) * 0.32;
-        else if (type === TERRAIN_TYPES.sand) terrainHeight -= 0.08;
-        else if (type === TERRAIN_TYPES.mud) terrainHeight = -0.22 + (broadNoise - 0.5) * 0.18;
-        else if (type === TERRAIN_TYPES.puddle) terrainHeight = -0.62 + (fineNoise - 0.5) * 0.08;
-        else if (type === TERRAIN_TYPES.root) terrainHeight = 0.92 + broadNoise * 0.58 + fineNoise * 0.22;
-        this.height[index] = clamp(terrainHeight, -0.78, 1.72);
+        this.height[index] = 0;
       }
     }
     this.addTerrainVisuals();
@@ -2042,7 +2031,6 @@ class TerrainSystem {
       bumpScale: 0.24,
       roughness: 0.97,
     });
-    this.addInstancedProps("grassTuft", "grass", Math.round(48 * density), new THREE.ConeGeometry(0.08, 0.7, 4, 1).translate(0, 0.35, 0), new THREE.MeshStandardMaterial({ color: 0x547d3d, roughness: 0.92 }), { yOffset: 0.06, minScale: 4.0, maxScale: 13.0, upright: true, tilt: 0.28, colorJitter: 0.05 });
     this.addInstancedProps("leafFlake", "leafLitter", Math.round(92 * density), createCurledLeafGeometry(1.45, 0.62, 8, 3), dryLeafMaterial, { yOffset: 0.18, minScale: 2.2, maxScale: 5.8, flat: true, tilt: 0.14, stretchX: 1.28, stretchZ: 1.0 });
     this.addInstancedProps("pebble", "gravel", Math.round(34 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0xa3a49a, roughness: 0.94 }), { yOffset: 0.7, minScale: 5.8, maxScale: 17.2, tumble: true, stretchY: 0.58 });
     this.addInstancedProps("fieldStone", ["soil", "gravel", "sand", "path"], Math.round(18 * density), new THREE.DodecahedronGeometry(0.45, 0), new THREE.MeshStandardMaterial({ color: 0xa7a292, roughness: 0.92, flatShading: true }), { yOffset: 1.6, minScale: 4.0, maxScale: 10.0, tumble: true, stretchY: 0.48, colorJitter: 0.045, castShadow: true });
