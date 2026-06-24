@@ -890,17 +890,17 @@ function makeGroundTexture() {
   canvas.height = 768;
   const context = canvas.getContext("2d");
   const gradient = context.createLinearGradient(0, 0, 768, 768);
-  gradient.addColorStop(0, "#c9aa67");
-  gradient.addColorStop(0.48, "#a9824b");
-  gradient.addColorStop(1, "#77603d");
+  gradient.addColorStop(0, "#a98b58");
+  gradient.addColorStop(0.52, "#94784d");
+  gradient.addColorStop(1, "#7e6845");
   context.fillStyle = gradient;
   context.fillRect(0, 0, 768, 768);
 
-  for (let i = 0; i < 3400; i += 1) {
+  for (let i = 0; i < 780; i += 1) {
     const x = Math.random() * 768;
     const y = Math.random() * 768;
-    const r = Math.random() * 1.8 + 0.35;
-    context.fillStyle = Math.random() > 0.5 ? "rgba(53,38,23,0.17)" : "rgba(255,232,170,0.12)";
+    const r = Math.random() * 1.35 + 0.45;
+    context.fillStyle = Math.random() > 0.5 ? "rgba(50,38,25,0.055)" : "rgba(236,212,164,0.045)";
     context.beginPath();
     context.arc(x, y, r, 0, Math.PI * 2);
     context.fill();
@@ -909,7 +909,7 @@ function makeGroundTexture() {
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(5, 5);
+  texture.repeat.set(2.8, 2.8);
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
@@ -1843,15 +1843,22 @@ class TerrainSystem {
         const red = (type.color >> 16) & 255;
         const green = (type.color >> 8) & 255;
         const blue = type.color & 255;
-        const n = this.noise(wx * 0.22 + 14, z * 0.22 - 3) - 0.5;
+        const n = this.noise(wx * 0.16 + 14, z * 0.16 - 3) - 0.5;
         const sampleStep = this.cellSize * 1.4;
         const slopeX = this.sampleHeight(wx + sampleStep, z) - this.sampleHeight(wx - sampleStep, z);
         const slopeZ = this.sampleHeight(wx, z + sampleStep) - this.sampleHeight(wx, z - sampleStep);
         const height = this.sampleHeight(wx, z);
-        const lightShade = clamp(1 + slopeX * -0.18 + slopeZ * 0.22 + height * 0.035 - Math.hypot(slopeX, slopeZ) * 0.08, 0.68, 1.24);
-        image.data[pixel] = clamp((red + n * 36) * lightShade, 0, 255);
-        image.data[pixel + 1] = clamp((green + n * 36) * lightShade, 0, 255);
-        image.data[pixel + 2] = clamp((blue + n * 36) * lightShade, 0, 255);
+        const baseRed = 128;
+        const baseGreen = 103;
+        const baseBlue = 67;
+        const typeInfluence = type.id === "puddle" ? 0.55 : type.id === "root" ? 0.38 : type.id === "pavement" || type.id === "gravel" ? 0.32 : 0.24;
+        const lightShade = clamp(1 + slopeX * -0.12 + slopeZ * 0.14 + height * 0.024 - Math.hypot(slopeX, slopeZ) * 0.05, 0.78, 1.14);
+        const mixedRed = baseRed * (1 - typeInfluence) + red * typeInfluence;
+        const mixedGreen = baseGreen * (1 - typeInfluence) + green * typeInfluence;
+        const mixedBlue = baseBlue * (1 - typeInfluence) + blue * typeInfluence;
+        image.data[pixel] = clamp((mixedRed + n * 12) * lightShade, 0, 255);
+        image.data[pixel + 1] = clamp((mixedGreen + n * 12) * lightShade, 0, 255);
+        image.data[pixel + 2] = clamp((mixedBlue + n * 12) * lightShade, 0, 255);
         image.data[pixel + 3] = 255;
       }
     }
@@ -1859,7 +1866,7 @@ class TerrainSystem {
     sourceCanvas.width = canvas.width;
     sourceCanvas.height = canvas.height;
     sourceCanvas.getContext("2d").putImageData(image, 0, 0);
-    context.filter = "blur(2px)";
+    context.filter = "blur(3.2px)";
     context.drawImage(sourceCanvas, 0, 0);
     context.filter = "none";
     this.texture = new THREE.CanvasTexture(canvas);
@@ -1926,19 +1933,19 @@ class TerrainSystem {
       roughness: 0.97,
     });
     this.addInstancedProps("grassTuft", "grass", Math.round(420 * density), new THREE.ConeGeometry(0.08, 0.7, 4, 1), new THREE.MeshStandardMaterial({ color: 0x547d3d, roughness: 0.92 }), { yOffset: 0.28, minScale: 0.65, maxScale: 1.28, upright: true, tilt: 0.28, colorJitter: 0.05 });
-    this.addInstancedProps("leafFlake", "leafLitter", Math.round(360 * density), createCurledLeafGeometry(1.45, 0.62, 8, 3), dryLeafMaterial, { yOffset: 0.13, minScale: 0.8, maxScale: 1.7, flat: true, tilt: 0.52, stretchX: 1.28, stretchZ: 1.0 });
+    this.addInstancedProps("leafFlake", "leafLitter", Math.round(360 * density), createCurledLeafGeometry(1.45, 0.62, 8, 3), dryLeafMaterial, { yOffset: 0.08, minScale: 0.8, maxScale: 1.7, flat: true, tilt: 0.14, stretchX: 1.28, stretchZ: 1.0 });
     this.addInstancedProps("pebble", "gravel", Math.round(250 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x85867e, roughness: 0.94 }), { yOffset: 0.08, minScale: 0.62, maxScale: 1.55, tumble: true, stretchY: 0.58 });
     this.addRootProps(Math.round(76 * density), Math.round(28 * density));
     this.addInstancedProps("twig", ["leafLitter", "soil", "grass"], Math.round(170 * density), new THREE.CylinderGeometry(0.045, 0.072, 1.35, 7, 1), twigMaterial, { yOffset: 0.16, minScale: 0.74, maxScale: 1.55, layCylinder: true, liftVariance: 0.12, stretchY: 1.72, stretchX: 0.94, stretchZ: 0.94, colorJitter: 0.05 });
     this.addInstancedProps("pineNeedle", ["leafLitter", "soil", "grass"], Math.round(260 * density), new THREE.CylinderGeometry(0.012, 0.018, 1.85, 5, 1), new THREE.MeshStandardMaterial({ color: 0xa88347, roughness: 0.96 }), { yOffset: 0.105, minScale: 0.62, maxScale: 1.55, layCylinder: true, liftVariance: 0.045, stretchY: 1.35, stretchX: 0.75, stretchZ: 0.75, colorJitter: 0.08 });
-    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(96 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.18, minScale: 0.78, maxScale: 1.65, flat: true, tilt: 0.68, stretchX: 1.16, stretchZ: 1.0, castShadow: true });
+    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(96 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.1, minScale: 0.78, maxScale: 1.65, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, castShadow: true });
     this.addInstancedProps("largeFallenLeaf", ["leafLitter", "grass", "soil"], Math.round(44 * density), createCurledLeafGeometry(5.4, 2.35, 14, 5), new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: makeLeafLitterTexture({ base: "#9b5324", light: "#d59350", dark: "#3f2110" }),
       roughness: 0.9,
       side: THREE.DoubleSide,
       alphaTest: 0.24,
-    }), { yOffset: 0.24, minScale: 0.72, maxScale: 1.34, flat: true, tilt: 0.82, stretchX: 1.05, stretchZ: 1.0, castShadow: true });
+    }), { yOffset: 0.13, minScale: 0.72, maxScale: 1.34, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, castShadow: true });
     this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(64 * density), new THREE.CylinderGeometry(0.08, 0.12, 2.35, 8, 1), darkTwigMaterial, { yOffset: 0.24, minScale: 0.78, maxScale: 1.42, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, colorJitter: 0.05, castShadow: true });
     this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(22 * density), new THREE.CylinderGeometry(0.15, 0.23, 4.2, 10, 2), darkTwigMaterial.clone(), { yOffset: 0.36, minScale: 0.72, maxScale: 1.25, layCylinder: true, liftVariance: 0.08, stretchY: 1.65, stretchX: 1.0, stretchZ: 1.0, colorJitter: 0.04, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
@@ -2039,12 +2046,12 @@ class TerrainSystem {
     this.ownedMaterials.push(shadowMaterial);
 
     const leafSpecs = [
-      { x: 28, z: -32, yaw: 0.72, scale: 1.02, tilt: 0.48 },
-      { x: 52, z: 12, yaw: -0.38, scale: 0.82, tilt: -0.42 },
-      { x: 10, z: 52, yaw: 1.45, scale: 0.9, tilt: 0.38 },
-      { x: -38, z: 34, yaw: -1.12, scale: 0.74, tilt: 0.32 },
-      { x: 72, z: -28, yaw: 2.2, scale: 0.68, tilt: -0.46 },
-      { x: -22, z: -48, yaw: -2.35, scale: 0.8, tilt: 0.42 },
+      { x: 28, z: -32, yaw: 0.72, scale: 1.02, tilt: 0.055 },
+      { x: 52, z: 12, yaw: -0.38, scale: 0.82, tilt: -0.04 },
+      { x: 10, z: 52, yaw: 1.45, scale: 0.9, tilt: 0.045 },
+      { x: -38, z: 34, yaw: -1.12, scale: 0.74, tilt: 0.035 },
+      { x: 72, z: -28, yaw: 2.2, scale: 0.68, tilt: -0.05 },
+      { x: -22, z: -48, yaw: -2.35, scale: 0.8, tilt: 0.05 },
     ];
     const leafMesh = new THREE.InstancedMesh(leafGeometry, leafMaterial, leafSpecs.length);
     leafMesh.name = "terrain-featuredLeaves";
@@ -2055,8 +2062,8 @@ class TerrainSystem {
       const spec = leafSpecs[i];
       const x = nest.x + spec.x;
       const z = nest.z + spec.z;
-      this.dummy.position.set(x, this.sampleHeight(x, z) + 0.46, z);
-      this.dummy.rotation.set(-Math.PI / 2 + spec.tilt, spec.tilt * 0.28, spec.yaw);
+      this.dummy.position.set(x, this.sampleHeight(x, z) + 0.18, z);
+      this.dummy.rotation.set(-Math.PI / 2 + spec.tilt, spec.tilt * 0.16, spec.yaw);
       this.dummy.scale.setScalar(spec.scale);
       this.dummy.updateMatrix();
       leafMesh.setMatrixAt(i, this.dummy.matrix);
