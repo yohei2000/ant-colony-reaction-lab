@@ -1848,6 +1848,22 @@ class TerrainSystem {
     return a * (1 - tz) + b * tz;
   }
 
+  sampleMaxHeightAround(x, z, radius = 0) {
+    let maxHeight = this.sampleHeight(x, z);
+    if (radius <= 0) return maxHeight;
+    const rings = radius > 18 ? 2 : 1;
+    const samples = radius > 18 ? 12 : 8;
+    for (let ring = 1; ring <= rings; ring += 1) {
+      const distance = radius * (ring / rings);
+      for (let i = 0; i < samples; i += 1) {
+        const angle = (i / samples) * Math.PI * 2;
+        const h = this.sampleHeight(x + Math.cos(angle) * distance, z + Math.sin(angle) * distance);
+        if (h > maxHeight) maxHeight = h;
+      }
+    }
+    return maxHeight;
+  }
+
   getVisualSegments() {
     const qualityFactor = this.sim.quality.effectsQuality >= 0.95 ? 1 : 0.76;
     const complexitySegments = this.complexity === "high" ? 128 : this.complexity === "low" ? 64 : 96;
@@ -2033,16 +2049,16 @@ class TerrainSystem {
     this.addInstancedProps("largeStone", ["soil", "gravel", "sand", "path"], Math.round(5 * density), new THREE.DodecahedronGeometry(0.95, 0), new THREE.MeshStandardMaterial({ color: 0x9b9789, roughness: 0.94, flatShading: true }), { yOffset: 2.6, minScale: 3.2, maxScale: 8.4, tumble: true, stretchY: 0.42, stretchX: 1.18, stretchZ: 0.92, colorJitter: 0.04, castShadow: true });
     this.addFeaturedRocks();
     this.addRootProps(Math.round(15 * density), Math.round(6 * density));
-    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.26, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, castShadow: true });
+    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.72, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, clearanceRadius: 1.45, castShadow: true });
     this.addInstancedProps("largeFallenLeaf", ["leafLitter", "grass", "soil"], Math.round(6 * density), createCurledLeafGeometry(5.4, 2.35, 14, 5), new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: makeLeafLitterTexture({ base: "#b9652a", light: "#e9aa62", dark: "#6d3c1d" }),
       roughness: 0.9,
       side: THREE.DoubleSide,
       alphaTest: 0.24,
-    }), { yOffset: 0.42, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, castShadow: true });
-    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.1, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, colorJitter: 0.035, castShadow: true });
-    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 1.62, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, colorJitter: 0.03, castShadow: true });
+    }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, castShadow: true });
+    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.55, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, clearanceRadius: 1.35, colorJitter: 0.035, castShadow: true });
+    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, colorJitter: 0.03, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(9 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0xa7aba2, roughness: 0.86 }), { yOffset: 0.12, minScale: 3.0, maxScale: 8.2, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
     this.addInstancedProps("mudClump", "mud", Math.round(17 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x8b7352, roughness: 0.98 }), { yOffset: 0.075, minScale: 1.3, maxScale: 4.0, tumble: true, stretchY: 0.36 });
@@ -2065,9 +2081,12 @@ class TerrainSystem {
     const place = (x, z) => {
       const type = this.sampleType(x, z);
       if (!targets.includes(type.id)) return false;
-      const h = this.sampleHeight(x, z);
-      this.dummy.position.set(x, h + yOffset, z);
       const yaw = this.random() * Math.PI * 2;
+      const s = minScale + this.random() * (maxScale - minScale);
+      const footprintScale = Math.max(options.stretchX ?? 1, options.stretchY ?? 1, options.stretchZ ?? 1);
+      const clearanceRadius = (options.clearanceRadius ?? 0) * s * footprintScale;
+      const h = clearanceRadius > 0 ? this.sampleMaxHeightAround(x, z, clearanceRadius) : this.sampleHeight(x, z);
+      this.dummy.position.set(x, h + yOffset, z);
       if (options.flat) {
         const tilt = options.tilt ?? 0.16;
         this.dummy.rotation.set(-Math.PI / 2 + (this.random() - 0.5) * tilt, (this.random() - 0.5) * tilt, yaw);
@@ -2086,7 +2105,6 @@ class TerrainSystem {
       } else {
         this.dummy.rotation.set(0, yaw, 0);
       }
-      const s = minScale + this.random() * (maxScale - minScale);
       this.dummy.scale.set(s * (options.stretchX ?? 1), s * (options.stretchY ?? 1), s * (options.stretchZ ?? 1));
       this.dummy.updateMatrix();
       mesh.setMatrixAt(placed, this.dummy.matrix);
@@ -2184,7 +2202,7 @@ class TerrainSystem {
       const spec = leafSpecs[i];
       const x = nest.x + spec.x;
       const z = nest.z + spec.z;
-      this.dummy.position.set(x, this.sampleHeight(x, z) + 0.46, z);
+      this.dummy.position.set(x, this.sampleMaxHeightAround(x, z, spec.scale * 5.4) + 0.95, z);
       this.dummy.rotation.set(-Math.PI / 2 + spec.tilt, spec.tilt * 0.16, spec.yaw);
       this.dummy.scale.setScalar(spec.scale);
       this.dummy.updateMatrix();
@@ -2208,7 +2226,7 @@ class TerrainSystem {
       const x = nest.x + spec.x;
       const z = nest.z + spec.z;
       this.propDirection.set(Math.sin(spec.yaw), spec.slope, Math.cos(spec.yaw)).normalize();
-      this.dummy.position.set(x, this.sampleHeight(x, z) + spec.radius * 2.25, z);
+      this.dummy.position.set(x, this.sampleMaxHeightAround(x, z, spec.length * 0.42) + spec.radius * 2.1 + 0.65, z);
       this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
       this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
