@@ -1329,6 +1329,7 @@ class TerrainSystem {
     this.roughness = new Float32Array(this.resolution * this.resolution);
     this.sampleScratch = { gx: 0, gz: 0, index: 0 };
     this.pheromoneScratch = { decay: 1, diffusion: 1 };
+    this.raycastHits = [];
     this.rootSegments = [];
     this.puddlePatches = [];
     this.visuals = [];
@@ -1470,11 +1471,24 @@ class TerrainSystem {
         this.terrainType[index] = type.index;
         this.moisture[index] = clamp((type === TERRAIN_TYPES.mud ? 0.72 : type === TERRAIN_TYPES.puddle ? 1 : 0.18 + broadNoise * 0.32), 0, 1);
         this.roughness[index] = clamp(type.roughness + fineNoise * 0.12, 0, 1);
-        this.height[index] = clamp((type === TERRAIN_TYPES.root ? 0.9 : type === TERRAIN_TYPES.puddle ? -0.35 : (broadNoise - 0.5) * 0.35) + fineNoise * 0.08, -0.5, 1.2);
+
+        let terrainHeight = (broadNoise - 0.5) * 0.62 + (fineNoise - 0.5) * 0.18;
+        if (nestDistance < safeRadius) terrainHeight *= 0.16;
+        if (type === TERRAIN_TYPES.path) terrainHeight *= 0.36;
+        else if (type === TERRAIN_TYPES.pavement) terrainHeight = terrainHeight * 0.22 + 0.1;
+        else if (type === TERRAIN_TYPES.grass) terrainHeight += 0.16;
+        else if (type === TERRAIN_TYPES.leafLitter) terrainHeight += 0.08 + fineNoise * 0.14;
+        else if (type === TERRAIN_TYPES.gravel) terrainHeight += (fineNoise - 0.3) * 0.32;
+        else if (type === TERRAIN_TYPES.sand) terrainHeight -= 0.08;
+        else if (type === TERRAIN_TYPES.mud) terrainHeight = -0.22 + (broadNoise - 0.5) * 0.18;
+        else if (type === TERRAIN_TYPES.puddle) terrainHeight = -0.62 + (fineNoise - 0.5) * 0.08;
+        else if (type === TERRAIN_TYPES.root) terrainHeight = 0.92 + broadNoise * 0.58 + fineNoise * 0.22;
+        this.height[index] = clamp(terrainHeight, -0.78, 1.72);
       }
     }
     this.addTerrainVisuals();
     this.sim.pheromones?.refreshTerrainModifiers?.();
+    this.sim.pheromones?.refreshTerrainGeometry?.();
   }
 
   noise(x, z) {
@@ -1561,7 +1575,64 @@ class TerrainSystem {
   }
 
   sampleHeight(x, z) {
-    return this.height[this.worldToIndex(x, z).index] ?? 0;
+    const gx = clamp((x + this.fieldRadius) * this.invCellSize - 0.5, 0, this.resolution - 1);
+    const gz = clamp((z + this.fieldRadius) * this.invCellSize - 0.5, 0, this.resolution - 1);
+    const x0 = Math.floor(gx);
+    const z0 = Math.floor(gz);
+    const x1 = Math.min(this.resolution - 1, x0 + 1);
+    const z1 = Math.min(this.resolution - 1, z0 + 1);
+    const tx = gx - x0;
+    const tz = gz - z0;
+    const row0 = z0 * this.resolution;
+    const row1 = z1 * this.resolution;
+    const h00 = this.height[row0 + x0] ?? 0;
+    const h10 = this.height[row0 + x1] ?? h00;
+    const h01 = this.height[row1 + x0] ?? h00;
+    const h11 = this.height[row1 + x1] ?? h10;
+    const a = h00 * (1 - tx) + h10 * tx;
+    const b = h01 * (1 - tx) + h11 * tx;
+    return a * (1 - tz) + b * tz;
+  }
+
+  getVisualSegments() {
+    const qualityFactor = this.sim.quality.effectsQuality >= 0.95 ? 1 : 0.76;
+    const complexitySegments = this.complexity === "high" ? 128 : this.complexity === "low" ? 64 : 96;
+    return Math.round(complexitySegments * qualityFactor);
+  }
+
+  buildTerrainGeometry() {
+    const segments = this.getVisualSegments();
+    const geometry = new THREE.PlaneGeometry(this.fieldSize, this.fieldSize, segments, segments);
+    const positions = geometry.attributes.position;
+    const edgeRadius = this.sim.worldRadius + 1.5;
+    for (let i = 0; i < positions.count; i += 1) {
+      const x = positions.getX(i);
+      const z = -positions.getY(i);
+      const distance = Math.hypot(x, z);
+      let y = this.sampleHeight(x, z);
+      if (distance > edgeRadius) y = -0.72;
+      positions.setZ(i, y);
+    }
+    positions.needsUpdate = true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    geometry.userData.terrainSegments = segments;
+    return geometry;
+  }
+
+  raycast(raycaster, target) {
+    if (!this.mesh) return null;
+    this.raycastHits.length = 0;
+    raycaster.intersectObject(this.mesh, false, this.raycastHits);
+    for (const hit of this.raycastHits) {
+      const point = hit.point;
+      if (Math.hypot(point.x, point.z) <= this.sim.worldRadius + this.sim.fieldMargin) {
+        target.copy(point);
+        return target;
+      }
+    }
+    return null;
   }
 
   isBlocked(x, z) {
@@ -1634,9 +1705,14 @@ class TerrainSystem {
         const green = (type.color >> 8) & 255;
         const blue = type.color & 255;
         const n = this.noise(wx * 0.22 + 14, z * 0.22 - 3) - 0.5;
-        image.data[pixel] = clamp(red + n * 36, 0, 255);
-        image.data[pixel + 1] = clamp(green + n * 36, 0, 255);
-        image.data[pixel + 2] = clamp(blue + n * 36, 0, 255);
+        const sampleStep = this.cellSize * 1.4;
+        const slopeX = this.sampleHeight(wx + sampleStep, z) - this.sampleHeight(wx - sampleStep, z);
+        const slopeZ = this.sampleHeight(wx, z + sampleStep) - this.sampleHeight(wx, z - sampleStep);
+        const height = this.sampleHeight(wx, z);
+        const lightShade = clamp(1 + slopeX * -0.18 + slopeZ * 0.22 + height * 0.035 - Math.hypot(slopeX, slopeZ) * 0.08, 0.68, 1.24);
+        image.data[pixel] = clamp((red + n * 36) * lightShade, 0, 255);
+        image.data[pixel + 1] = clamp((green + n * 36) * lightShade, 0, 255);
+        image.data[pixel + 2] = clamp((blue + n * 36) * lightShade, 0, 255);
         image.data[pixel + 3] = 255;
       }
     }
@@ -1654,7 +1730,7 @@ class TerrainSystem {
     this.texture.generateMipmaps = false;
     this.texture.anisotropy = 1;
     this.texture.userData.sharedProceduralAsset = true;
-    const geometry = new THREE.PlaneGeometry(this.fieldSize, this.fieldSize, 1, 1);
+    const geometry = this.buildTerrainGeometry();
     const material = new THREE.MeshStandardMaterial({
       map: this.texture,
       transparent: true,
@@ -1670,8 +1746,9 @@ class TerrainSystem {
     this.ownedMaterials.push(material);
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.rotation.x = -Math.PI / 2;
-    this.mesh.position.y = 0.012;
+    this.mesh.position.y = 0;
     this.mesh.renderOrder = 0;
+    this.mesh.receiveShadow = this.sim.quality.shadowQuality !== "off";
     this.sim.scene.add(this.mesh);
     this.visuals.push(this.mesh);
     this.addProps();
@@ -1702,7 +1779,7 @@ class TerrainSystem {
       const type = this.sampleType(x, z);
       if (type.id !== typeId) continue;
       const h = this.sampleHeight(x, z);
-      this.dummy.position.set(x, 0.035 + Math.max(0, h) * 0.08, z);
+      this.dummy.position.set(x, h + 0.045, z);
       if (typeId === "leafLitter") {
         this.dummy.rotation.set(-Math.PI / 2, 0, this.random() * Math.PI * 2);
       } else if (typeId === "gravel") {
@@ -1750,6 +1827,7 @@ class PheromoneFieldSystem {
     this.diffusionFrame = 0;
     this.visualAccumulator = 0;
     this.visualInterval = 0.1;
+    this.visualSegments = options.visualSegments ?? (sim.quality.effectsQuality >= 0.95 ? 96 : 64);
     this.gridScratch = { gx: 0, gz: 0 };
     this.gradientScratch = { x: 0, z: 0 };
     this.antennaeScratch = { left: 0, right: 0, front: 0, peak: 0, turn: 0, strength: 0 };
@@ -1774,7 +1852,7 @@ class PheromoneFieldSystem {
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.generateMipmaps = false;
-    this.geometry = new THREE.PlaneGeometry(this.fieldSize, this.fieldSize, 1, 1);
+    this.geometry = new THREE.PlaneGeometry(this.fieldSize, this.fieldSize, this.visualSegments, this.visualSegments);
     this.material = new THREE.MeshBasicMaterial({
       map: this.texture,
       transparent: true,
@@ -1785,10 +1863,11 @@ class PheromoneFieldSystem {
     });
     this.overlay = new THREE.Mesh(this.geometry, this.material);
     this.overlay.rotation.x = -Math.PI / 2;
-    this.overlay.position.y = 0.055;
+    this.overlay.position.y = 0;
     this.overlay.renderOrder = 2;
     this.overlay.visible = false;
     this.overlay.matrixAutoUpdate = false;
+    this.refreshTerrainGeometry();
     this.overlay.updateMatrix();
     sim.scene.add(this.overlay);
     this.refreshTerrainModifiers();
@@ -1837,6 +1916,20 @@ class PheromoneFieldSystem {
         this.terrainDiffusion[index] = modifiers.diffusion;
       }
     }
+  }
+
+  refreshTerrainGeometry() {
+    if (!this.geometry) return;
+    const terrain = this.sim.terrain;
+    const positions = this.geometry.attributes.position;
+    for (let i = 0; i < positions.count; i += 1) {
+      const x = positions.getX(i);
+      const z = -positions.getY(i);
+      const y = terrain ? terrain.sampleHeight(x, z) + 0.08 : 0.08;
+      positions.setZ(i, y);
+    }
+    positions.needsUpdate = true;
+    this.geometry.computeBoundingSphere();
   }
 
   update(dt) {
@@ -3230,11 +3323,13 @@ class Ant3D {
   }
 
   renderState(sim, alpha) {
+    const x = this.prevX + (this.x - this.prevX) * alpha;
+    const z = this.prevZ + (this.z - this.prevZ) * alpha;
     return {
-      x: this.prevX + (this.x - this.prevX) * alpha,
-      z: this.prevZ + (this.z - this.prevZ) * alpha,
+      x,
+      z,
       angle: this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha,
-      y: 0.72 + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03,
+      y: sim.getSurfaceY(x, z, 0.72) + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03,
       scale: this.state === "stunned" ? 0.82 : 1,
       state: this.state,
       carrying: this.carrying,
@@ -3483,7 +3578,7 @@ class AntColony3D {
     this.cameraTarget = new THREE.Vector3(this.nest.x * 0.55, 0, this.nest.z * 0.55);
     this.cameraRenderTarget = this.cameraTarget.clone();
     this.cameraYaw = -0.62;
-    this.cameraPitch = 1.5;
+    this.cameraPitch = 1.38;
     this.targetCameraYaw = this.cameraYaw;
     this.targetCameraPitch = this.cameraPitch;
     this.cameraDistance = this.getDefaultCameraDistance();
@@ -3495,9 +3590,9 @@ class AntColony3D {
 
     this.assetService.preloadProceduralAssets();
     this.createSharedAssets();
+    this.terrain = new TerrainSystem(this);
     this.antRenderer = new AntRenderSystem(this, Number(ui.antCount.max));
     this.createWorld();
-    this.terrain = new TerrainSystem(this);
     this.pheromones = new PheromoneFieldSystem(this);
     this.bindEvents();
     this.debugPanel = new DebugPanel(this);
@@ -3670,7 +3765,7 @@ class AntColony3D {
 
     const ground = new THREE.Mesh(new THREE.CircleGeometry(this.worldRadius + this.fieldMargin, 224), this.materials.ground);
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.03;
+    ground.position.y = -0.86;
     ground.receiveShadow = this.quality.shadowQuality !== "off";
     this.scene.add(ground);
     this.sharedGeometries.add(ground.geometry);
@@ -3688,9 +3783,14 @@ class AntColony3D {
     this.createNest();
   }
 
+  getSurfaceY(x, z, offset = 0) {
+    return (this.terrain?.sampleHeight(x, z) ?? 0) + offset;
+  }
+
   createNest() {
+    const nestY = this.getSurfaceY(this.nest.x, this.nest.z);
     const mound = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), this.materials.nest);
-    mound.position.set(this.nest.x, 1.25, this.nest.z);
+    mound.position.set(this.nest.x, nestY + 1.25, this.nest.z);
     mound.scale.set(this.nest.radius * 1.15, 2.1, this.nest.radius * 0.82);
     mound.castShadow = this.quality.shadowQuality !== "off";
     mound.receiveShadow = this.quality.shadowQuality !== "off";
@@ -3703,7 +3803,7 @@ class AntColony3D {
       hole.rotation.x = -Math.PI / 2;
       hole.position.set(
         this.nest.x + Math.cos(angle) * this.nest.radius * rand(0.08, 0.45),
-        2.72,
+        nestY + 2.72,
         this.nest.z + Math.sin(angle) * this.nest.radius * rand(0.08, 0.35),
       );
       hole.scale.set(rand(1.0, 1.8), rand(0.55, 0.95), 1);
@@ -4188,13 +4288,17 @@ class AntColony3D {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -(((clientY - rect.top) / rect.height) * 2 - 1));
     this.raycaster.setFromCamera(this.ndc, this.camera);
-    const hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHit);
+    let hit = this.terrain?.raycast(this.raycaster, this.groundHit);
+    if (!hit) {
+      hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHit);
+      if (hit) this.groundHit.y = this.getSurfaceY(hit.x, hit.z);
+    }
     if (!hit) return null;
     const d = Math.hypot(hit.x, hit.z);
     if (d > this.worldRadius + this.fieldMargin) return null;
     this.debugCursorX = hit.x;
     this.debugCursorZ = hit.z;
-    return { x: hit.x, z: hit.z };
+    return { x: hit.x, z: hit.z, y: hit.y };
   }
 
   addWater(x, z, scale = 1) {
@@ -4282,7 +4386,7 @@ class AntColony3D {
     ring.scale.set(radius * 0.85, radius * 0.85, radius * 0.85);
     ring.position.y = 0.08;
     group.add(ring);
-    group.position.set(x, 0, z);
+    group.position.set(x, this.getSurfaceY(x, z), z);
     this.scene.add(group);
     this.dynamicObjects.add(group);
     this.water.push({ x, z, radius, power: clamp(0.45 + intensity * 0.13 * scale, 0.35, 1.08), age: 0, group, ring, shore, shadow, depth, ripples, highlights });
@@ -4306,7 +4410,7 @@ class AntColony3D {
     ring.scale.set(radius * 1.1, radius * 1.1, radius * 1.1);
     ring.position.y = 0.12;
     group.add(ring);
-    group.position.set(x, 0, z);
+    group.position.set(x, this.getSurfaceY(x, z), z);
     this.scene.add(group);
     this.dynamicObjects.add(group);
 
@@ -4367,7 +4471,7 @@ class AntColony3D {
       item.crumbs.push(crumb);
     }
     if (item.natural) this.addFoodSpawnHighlight(item, group);
-    group.position.set(x, 0, z);
+    group.position.set(x, this.getSurfaceY(x, z), z);
     this.scene.add(group);
     this.dynamicObjects.add(group);
     this.food.push(item);
@@ -4511,18 +4615,20 @@ class AntColony3D {
     const direction = new THREE.Vector3(dx, 0, dz).normalize();
     const side = new THREE.Vector3(-direction.z, 0, direction.x);
     const up = new THREE.Vector3(0, 1, 0);
-    const center = new THREE.Vector3((branch.x1 + branch.x2) / 2, width * 0.95, (branch.z1 + branch.z2) / 2);
+    const centerX = (branch.x1 + branch.x2) / 2;
+    const centerZ = (branch.z1 + branch.z2) / 2;
+    const center = new THREE.Vector3(centerX, this.getSurfaceY(centerX, centerZ, width * 0.95), centerZ);
     const group = new THREE.Group();
 
     const contactShadow = new THREE.Mesh(this.geometries.waterCircle, this.materials.branchShadow.clone());
     contactShadow.rotation.x = -Math.PI / 2;
     contactShadow.rotation.z = -Math.atan2(dz, dx);
-    contactShadow.position.set(center.x, 0.024, center.z);
+    contactShadow.position.set(center.x, this.getSurfaceY(center.x, center.z, 0.024), center.z);
     contactShadow.scale.set(length * 0.52, width * 2.1, 1);
     group.add(contactShadow);
 
-    const start = new THREE.Vector3(branch.x1, width * 0.92, branch.z1);
-    const end = new THREE.Vector3(branch.x2, width * 0.92, branch.z2);
+    const start = new THREE.Vector3(branch.x1, this.getSurfaceY(branch.x1, branch.z1, width * 0.92), branch.z1);
+    const end = new THREE.Vector3(branch.x2, this.getSurfaceY(branch.x2, branch.z2, width * 0.92), branch.z2);
     const segmentCount = clamp(Math.floor(length / 10), 4, 8);
     const points = [];
     const bendPhase = rand(0, Math.PI * 2);
@@ -4531,7 +4637,9 @@ class AntColony3D {
       const endpointFade = Math.sin(t * Math.PI);
       const wobble = side.clone().multiplyScalar(endpointFade * Math.sin(t * Math.PI * 2 + bendPhase) * width * rand(0.12, 0.34));
       const lift = Math.sin(t * Math.PI) * width * rand(0.02, 0.12);
-      points.push(start.clone().lerp(end, t).add(wobble).add(new THREE.Vector3(0, lift, 0)));
+      const point = start.clone().lerp(end, t).add(wobble);
+      point.y = this.getSurfaceY(point.x, point.z, width * 0.92 + lift);
+      points.push(point);
     }
 
     for (let i = 0; i < points.length - 1; i += 1) {
@@ -4611,7 +4719,9 @@ class AntColony3D {
       new THREE.CylinderGeometry(0.7, 0.6, length, 8),
       new THREE.MeshBasicMaterial({ color: 0x51b7a6, transparent: true, opacity: 0.58 }),
     );
-    mesh.position.set((this.branchDraft.x1 + this.branchDraft.x2) / 2, 0.7, (this.branchDraft.z1 + this.branchDraft.z2) / 2);
+    const centerX = (this.branchDraft.x1 + this.branchDraft.x2) / 2;
+    const centerZ = (this.branchDraft.z1 + this.branchDraft.z2) / 2;
+    mesh.position.set(centerX, this.getSurfaceY(centerX, centerZ, 0.7), centerZ);
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dz).normalize());
     this.branchPreview = mesh;
     this.scene.add(mesh);
@@ -4665,7 +4775,7 @@ class AntColony3D {
             : this.materials.trailWater.clone();
     const mesh = new THREE.Mesh(this.geometries.trailCircle, material);
     mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(x, 0.045, z);
+    mesh.position.set(x, this.getSurfaceY(x, z, 0.055), z);
     const scale = kind === "alarm" ? 1.3 : 0.85;
     mesh.scale.setScalar(scale);
     this.scene.add(mesh);
