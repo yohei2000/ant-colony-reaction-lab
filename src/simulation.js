@@ -181,14 +181,17 @@ const HOMING_PARAMS = {
   nestArriveRadiusMultiplier: 0.75,
   searchFallbackDelay: 8,
   searchGiveUpDelay: 18,
+  exploreReturnBaseDelay: 34,
+  exploreReturnPersistenceDelay: 22,
+  exploreReturnCuriosityDelay: 10,
 };
 
 const NEST_TRAFFIC_PARAMS = {
   dwellSeconds: 10,
-  holeRadiusScale: 0.21,
-  entryRadiusScale: 0.34,
-  queueRadiusScale: 0.78,
-  exitRadiusScale: 0.39,
+  holeRadiusScale: 0.16,
+  entryRadiusScale: 0.26,
+  queueRadiusScale: 0.68,
+  exitRadiusScale: 0.31,
   entryRate: 2.15,
   exitRate: 1.45,
   maxEntryTokens: 1,
@@ -3238,11 +3241,11 @@ class Ant3D {
     this.prevZ = this.z;
     this.prevAngle = this.angle;
     this.stateTime += dt;
-    this.homeTimer += dt;
     if (this.insideNest) {
       this.updateInsideNest(dt, sim);
       return;
     }
+    this.homeTimer += dt;
     this.wet = Math.max(0, this.wet - dt * 0.11);
     this.energy = clamp(this.energy + dt * 0.012, 0, 1);
     this.lastTrail += dt;
@@ -3378,6 +3381,7 @@ class Ant3D {
     this.carrying = 0;
     this.carryingLoad = 0;
     this.carryingFoodValue = 0;
+    this.homeTimer = 0;
     this.x = sim.nest.x;
     this.z = sim.nest.z;
     this.prevX = this.x;
@@ -3436,6 +3440,8 @@ class Ant3D {
     this.prevZ = this.z;
     this.angle = angle;
     this.prevAngle = angle;
+    this.homeTimer = 0;
+    this.energy = 1;
     this.resetPathIntegration(sim);
     this.setState("explore");
   }
@@ -3701,7 +3707,11 @@ class Ant3D {
       }
     }
 
-    if (this.homeTimer > 9 + this.traits.persistence * 7 || this.energy < 0.2) {
+    const exploreReturnDelay =
+      HOMING_PARAMS.exploreReturnBaseDelay +
+      this.traits.persistence * HOMING_PARAMS.exploreReturnPersistenceDelay +
+      this.traits.curiosity * HOMING_PARAMS.exploreReturnCuriosityDelay;
+    if (this.homeTimer > exploreReturnDelay || this.energy < 0.12) {
       this.setState("return");
       this.carrying = 0;
       this.carryingFoodType = null;
