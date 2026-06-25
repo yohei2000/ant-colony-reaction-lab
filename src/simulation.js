@@ -2151,6 +2151,22 @@ class TerrainSystem {
       const aheadPZ = collider.z + collider.dirZ * aheadAlong;
       const aheadDistance = Math.hypot(aheadX - aheadPX, aheadZ - aheadPZ);
       const avoidRadius = collider.avoidRadius + 0.42;
+      if (collider.climbable) {
+        const mountRadius = avoidRadius + 1.2;
+        if (aheadDistance < mountRadius) {
+          const aheadNX = aheadDistance > 0.001 ? (aheadX - aheadPX) / aheadDistance : nx;
+          const aheadNZ = aheadDistance > 0.001 ? (aheadZ - aheadPZ) / aheadDistance : nz;
+          const mountStrength = clamp(1 - aheadDistance / mountRadius, 0, 1);
+          steering.x += -aheadNX * mountStrength * 0.54 + collider.dirX * alongSign * mountStrength * 0.42;
+          steering.z += -aheadNZ * mountStrength * 0.54 + collider.dirZ * alongSign * mountStrength * 0.42;
+        }
+        if (distance < avoidRadius) {
+          const centerPull = clamp(1 - distance / avoidRadius, 0, 1) * 0.28;
+          steering.x += -nx * centerPull + collider.dirX * alongSign * 0.32;
+          steering.z += -nz * centerPull + collider.dirZ * alongSign * 0.32;
+        }
+        continue;
+      }
       if (aheadDistance < avoidRadius + 1.4) {
         const aheadNX = aheadDistance > 0.001 ? (aheadX - aheadPX) / aheadDistance : nx;
         const aheadNZ = aheadDistance > 0.001 ? (aheadZ - aheadPZ) / aheadDistance : nz;
@@ -2362,7 +2378,7 @@ class TerrainSystem {
       alphaTest: 0.24,
     }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, collider: { kind: "leaf", length: 5.4, width: 2.35, surfaceOffset: 0.22, crown: 0.28 }, castShadow: true });
     this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.55, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, clearanceRadius: 1.35, collider: { kind: "branch", length: 2.35, radius: 0.115, avoidPadding: 0.45, surfaceRadiusScale: 0.9, climbable: true }, colorJitter: 0.035, castShadow: true });
-    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.78, surfaceRadiusScale: 0.88, climbable: false }, colorJitter: 0.03, castShadow: true });
+    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.78, surfaceRadiusScale: 0.88, climbable: true }, colorJitter: 0.03, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(9 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0xa7aba2, roughness: 0.86 }), { yOffset: 0.12, minScale: 3.0, maxScale: 8.2, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
     this.addInstancedProps("mudClump", "mud", Math.round(17 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x8b7352, roughness: 0.98 }), { yOffset: 0.075, minScale: 1.3, maxScale: 4.0, tumble: true, stretchY: 0.36 });
@@ -2565,7 +2581,7 @@ class TerrainSystem {
         halfLength: spec.length * 0.5,
         radius: spec.radius,
         avoidRadius: spec.radius + 0.6,
-        climbable: false,
+        climbable: true,
         surfaceY: this.dummy.position.y + spec.radius * 0.75,
         crown: spec.radius * 0.18,
         boundsRadius: spec.length * 0.5 + spec.radius + 2,
@@ -3263,6 +3279,7 @@ class Ant3D {
 
     this.fieldGradient = { x: 0, z: 0 };
     this.propSurface = { hit: false, y: 0, slow: 1, pitch: 0, roll: 0, kind: null, climbable: false, edgeFactor: 0 };
+    this.branchSurface = { hit: false, y: 0, slow: 1, pitch: 0, roll: 0, kind: null, climbable: false, edgeFactor: 0 };
     this.surfaceY = sim.getSurfaceY(this.x, this.z, 0.72);
     this.surfacePitch = 0;
     this.surfaceRoll = 0;
@@ -3468,7 +3485,9 @@ class Ant3D {
 
   updateSurfaceContact(dt, sim) {
     const groundY = sim.getSurfaceY(this.x, this.z, 0.72);
-    const contact = sim.terrain?.samplePropContact(this.x, this.z, this.angle, this.propSurface);
+    const propContact = sim.terrain?.samplePropContact(this.x, this.z, this.angle, this.propSurface);
+    const branchContact = sim.sampleDynamicBranchContact(this.x, this.z, this.angle, this.branchSurface);
+    const contact = branchContact.hit && (!propContact?.hit || branchContact.y > propContact.y) ? branchContact : propContact;
     const targetY = contact?.hit ? Math.max(groundY, contact.y + 0.72) : groundY;
     const targetPitch = contact?.hit ? contact.pitch : 0;
     const targetRoll = contact?.hit ? contact.roll : 0;
@@ -4221,21 +4240,19 @@ class Ant3D {
       const aheadDistance = distance2(aheadX, aheadZ, aheadPX, aheadPZ);
       const avoidRadius = branch.width + 1.1;
       const alongSign = forwardX * dirX + forwardZ * dirZ >= 0 ? 1 : -1;
-      if (aheadDistance < avoidRadius + 1.6) {
-        const avoidStrength = clamp(1 - aheadDistance / (avoidRadius + 1.6), 0, 1);
+      const mountRadius = avoidRadius + 1.6;
+      if (aheadDistance < mountRadius) {
+        const mountStrength = clamp(1 - aheadDistance / mountRadius, 0, 1);
         const aheadNX = aheadDistance > 0.001 ? (aheadX - aheadPX) / aheadDistance : nx;
         const aheadNZ = aheadDistance > 0.001 ? (aheadZ - aheadPZ) / aheadDistance : nz;
-        steering.x += aheadNX * avoidStrength * 0.72 + dirX * alongSign * avoidStrength * 0.48;
-        steering.z += aheadNZ * avoidStrength * 0.72 + dirZ * alongSign * avoidStrength * 0.48;
+        steering.x += -aheadNX * mountStrength * 0.5 + dirX * alongSign * mountStrength * 0.44;
+        steering.z += -aheadNZ * mountStrength * 0.5 + dirZ * alongSign * mountStrength * 0.44;
       }
 
       if (d < avoidRadius) {
-        const push = Math.min((avoidRadius - d) * 0.16, 0.36);
-        this.x += nx * push;
-        this.z += nz * push;
         const slide = clamp(1 - d / avoidRadius, 0, 1);
-        steering.x += nx * 0.24 + dirX * alongSign * slide * 0.6;
-        steering.z += nz * 0.24 + dirZ * alongSign * slide * 0.6;
+        steering.x += -nx * slide * 0.24 + dirX * alongSign * slide * 0.56;
+        steering.z += -nz * slide * 0.24 + dirZ * alongSign * slide * 0.56;
       }
     }
     sim.terrain?.resolvePropCollisions(this, steering);
@@ -5049,6 +5066,60 @@ class AntColony3D {
   nextNestExitAngle() {
     this.nestTraffic.exitAngle = (this.nestTraffic.exitAngle + 2.399963229728653) % (Math.PI * 2);
     return this.nestTraffic.exitAngle + rand(-0.22, 0.22);
+  }
+
+  sampleDynamicBranchContact(x, z, angle, target) {
+    target.hit = false;
+    target.y = 0;
+    target.slow = 1;
+    target.pitch = 0;
+    target.roll = 0;
+    target.kind = null;
+    target.climbable = false;
+    target.edgeFactor = 0;
+    if (this.branches.length === 0) return target;
+
+    const forwardX = Math.sin(angle);
+    const forwardZ = Math.cos(angle);
+    const rightX = Math.cos(angle);
+    const rightZ = -Math.sin(angle);
+    let bestY = -Infinity;
+
+    for (const branch of this.branches) {
+      const vx = branch.x2 - branch.x1;
+      const vz = branch.z2 - branch.z1;
+      const lenSq = vx * vx + vz * vz || 1;
+      const t = clamp(((x - branch.x1) * vx + (z - branch.z1) * vz) / lenSq, 0, 1);
+      const px = branch.x1 + vx * t;
+      const pz = branch.z1 + vz * t;
+      const dx = x - px;
+      const dz = z - pz;
+      const distance = Math.hypot(dx, dz);
+      const surfaceRadius = branch.width * 0.58;
+      const contactRadius = branch.width * 0.74;
+      if (distance > contactRadius) continue;
+
+      const edgeFactor = clamp(1 - distance / contactRadius, 0, 1);
+      const y = this.getSurfaceY(px, pz, surfaceRadius * 0.92) + surfaceRadius * 0.14 * Math.sqrt(edgeFactor);
+      if (y <= bestY) continue;
+
+      bestY = y;
+      const nx = distance > 0.001 ? dx / distance : -vz / Math.sqrt(lenSq);
+      const nz = distance > 0.001 ? dz / distance : vx / Math.sqrt(lenSq);
+      const slopeScale = -edgeFactor * 0.28;
+      const gradX = nx * slopeScale;
+      const gradZ = nz * slopeScale;
+      target.hit = true;
+      target.y = y;
+      target.slow = 0.58 + edgeFactor * 0.2;
+      target.pitch = clamp((gradX * forwardX + gradZ * forwardZ) * 0.72, -PROP_CONTACT_PARAMS.maxPitch, PROP_CONTACT_PARAMS.maxPitch);
+      target.roll = clamp((gradX * rightX + gradZ * rightZ) * 0.82, -PROP_CONTACT_PARAMS.maxRoll, PROP_CONTACT_PARAMS.maxRoll);
+      target.kind = "branch";
+      target.climbable = true;
+      target.edgeFactor = edgeFactor;
+    }
+
+    return target;
   }
 
   disposeDynamicItem(item) {
