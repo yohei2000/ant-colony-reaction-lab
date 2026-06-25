@@ -209,6 +209,15 @@ const ANT_FORMATION_PARAMS = {
   queueOrderGain: 0.48,
 };
 
+const PROP_CONTACT_PARAMS = {
+  branchClimbRadiusMax: 1.05,
+  branchApproachLookAhead: 4.8,
+  surfaceHeightLerp: 0.18,
+  surfaceTiltLerp: 0.2,
+  maxPitch: 0.28,
+  maxRoll: 0.22,
+};
+
 const TERRAIN_TYPES = {
   soil: {
     id: "soil",
@@ -1668,7 +1677,7 @@ class TerrainSystem {
     this.propColliderInvCellSize = 1 / this.propColliderCellSize;
     this.propColliderGridSize = Math.ceil(this.fieldSize / this.propColliderCellSize) + 1;
     this.propColliderGrid = Array.from({ length: this.propColliderGridSize * this.propColliderGridSize }, () => []);
-    this.propSurfaceScratch = { hit: false, y: 0, slow: 1 };
+    this.propSurfaceScratch = { hit: false, y: 0, slow: 1, pitch: 0, roll: 0, kind: null, climbable: false, edgeFactor: 0 };
     this.visuals = [];
     this.ownedGeometries = [];
     this.ownedMaterials = [];
@@ -2006,6 +2015,7 @@ class TerrainSystem {
         halfLength: length * 0.5,
         radius,
         avoidRadius: radius + (config.avoidPadding ?? 0.55),
+        climbable: config.climbable ?? radius <= PROP_CONTACT_PARAMS.branchClimbRadiusMax,
         surfaceY: baseHeight + yOffset + radius * (config.surfaceRadiusScale ?? 0.75),
         crown: radius * 0.18,
         boundsRadius: length * 0.5 + radius + 2,
@@ -2013,15 +2023,23 @@ class TerrainSystem {
     }
   }
 
-  samplePropSurface(x, z, target = this.propSurfaceScratch) {
+  samplePropContact(x, z, angle = 0, target = this.propSurfaceScratch) {
     target.hit = false;
     target.y = this.sampleHeight(x, z);
     target.slow = 1;
+    target.pitch = 0;
+    target.roll = 0;
+    target.kind = null;
+    target.climbable = false;
+    target.edgeFactor = 0;
     const cell = this.propColliderGrid[this.propColliderCellIndex(x, z)];
     if (!cell || cell.length === 0) return target;
 
     let bestY = -Infinity;
-    let bestSlow = 1;
+    const forwardX = Math.sin(angle);
+    const forwardZ = Math.cos(angle);
+    const rightX = Math.cos(angle);
+    const rightZ = -Math.sin(angle);
     for (const collider of cell) {
       const dx = x - collider.x;
       const dz = z - collider.z;
@@ -2032,37 +2050,68 @@ class TerrainSystem {
         const side = dx * collider.sideX + dz * collider.sideZ;
         const normalized = (along * along) / (collider.halfLength * collider.halfLength) + (side * side) / (collider.halfWidth * collider.halfWidth);
         if (normalized > 1) continue;
-        const y = collider.surfaceY + collider.crown * (1 - normalized);
+        const edgeFactor = clamp(1 - normalized, 0, 1);
+        const crown = collider.crown * Math.pow(edgeFactor, 0.65);
+        const curl = Math.sin((along / collider.halfLength) * Math.PI * 0.5) * collider.crown * 0.2 * edgeFactor;
+        const y = collider.surfaceY + crown + curl;
         if (y > bestY) {
           bestY = y;
-          bestSlow = 0.95;
+          const slopeAlong = (-2 * collider.crown * along) / (collider.halfLength * collider.halfLength);
+          const slopeSide = (-2 * collider.crown * side) / (collider.halfWidth * collider.halfWidth);
+          const gradX = slopeAlong * collider.dirX + slopeSide * collider.sideX;
+          const gradZ = slopeAlong * collider.dirZ + slopeSide * collider.sideZ;
+          const slopeForward = gradX * forwardX + gradZ * forwardZ;
+          const slopeRight = gradX * rightX + gradZ * rightZ;
+          target.hit = true;
+          target.y = bestY;
+          target.slow = 0.78 + edgeFactor * 0.12;
+          target.pitch = clamp(slopeForward * 0.72, -PROP_CONTACT_PARAMS.maxPitch, PROP_CONTACT_PARAMS.maxPitch);
+          target.roll = clamp(slopeRight * 0.64, -PROP_CONTACT_PARAMS.maxRoll, PROP_CONTACT_PARAMS.maxRoll);
+          target.kind = "leaf";
+          target.climbable = true;
+          target.edgeFactor = edgeFactor;
         }
       } else if (collider.kind === "branch") {
+        if (!collider.climbable) continue;
         const along = clamp(dx * collider.dirX + dz * collider.dirZ, -collider.halfLength, collider.halfLength);
         const px = collider.x + collider.dirX * along;
         const pz = collider.z + collider.dirZ * along;
         const distance = Math.hypot(x - px, z - pz);
-        if (distance > collider.radius + 0.8) continue;
-        const crown = clamp(1 - distance / (collider.radius + 0.8), 0, 1);
-        const y = collider.surfaceY + collider.crown * crown;
+        const contactRadius = collider.radius + 0.34;
+        if (distance > contactRadius) continue;
+        const edgeFactor = clamp(1 - distance / contactRadius, 0, 1);
+        const y = collider.surfaceY + collider.crown * Math.sqrt(edgeFactor);
         if (y > bestY) {
           bestY = y;
-          bestSlow = 0.88;
+          const nx = distance > 0.001 ? (x - px) / distance : -collider.dirZ;
+          const nz = distance > 0.001 ? (z - pz) / distance : collider.dirX;
+          const slopeScale = -edgeFactor * 0.36;
+          const gradX = nx * slopeScale;
+          const gradZ = nz * slopeScale;
+          target.hit = true;
+          target.y = bestY;
+          target.slow = 0.62 + edgeFactor * 0.18;
+          target.pitch = clamp((gradX * forwardX + gradZ * forwardZ) * 0.75, -PROP_CONTACT_PARAMS.maxPitch, PROP_CONTACT_PARAMS.maxPitch);
+          target.roll = clamp((gradX * rightX + gradZ * rightZ) * 0.82, -PROP_CONTACT_PARAMS.maxRoll, PROP_CONTACT_PARAMS.maxRoll);
+          target.kind = "branch";
+          target.climbable = true;
+          target.edgeFactor = edgeFactor;
         }
       }
     }
 
-    if (bestY > -Infinity) {
-      target.hit = true;
-      target.y = bestY;
-      target.slow = bestSlow;
-    }
     return target;
+  }
+
+  samplePropSurface(x, z, target = this.propSurfaceScratch) {
+    return this.samplePropContact(x, z, 0, target);
   }
 
   resolvePropCollisions(ant, steering) {
     const cell = this.propColliderGrid[this.propColliderCellIndex(ant.x, ant.z)];
     if (!cell || cell.length === 0) return;
+    const forwardX = Math.sin(ant.angle);
+    const forwardZ = Math.cos(ant.angle);
     for (const collider of cell) {
       if (collider.kind !== "branch") continue;
       const dx = ant.x - collider.x;
@@ -2074,7 +2123,6 @@ class TerrainSystem {
       let nx = ant.x - px;
       let nz = ant.z - pz;
       let distance = Math.hypot(nx, nz);
-      if (distance >= collider.avoidRadius) continue;
       if (distance < 0.001) {
         nx = -collider.dirZ;
         nz = collider.dirX;
@@ -2083,11 +2131,41 @@ class TerrainSystem {
         nx /= distance;
         nz /= distance;
       }
-      const push = Math.min((collider.avoidRadius - distance) * 0.35, 0.8);
+
+      const branchDot = forwardX * collider.dirX + forwardZ * collider.dirZ;
+      const alongSign = branchDot >= 0 ? 1 : -1;
+      const contactRadius = collider.radius + 0.34;
+      if (collider.climbable && distance < contactRadius) {
+        const centerPull = clamp(1 - distance / contactRadius, 0, 1) * 0.16;
+        steering.x += collider.dirX * alongSign * 0.32 - nx * centerPull;
+        steering.z += collider.dirZ * alongSign * 0.32 - nz * centerPull;
+        continue;
+      }
+
+      const aheadX = ant.x + forwardX * PROP_CONTACT_PARAMS.branchApproachLookAhead;
+      const aheadZ = ant.z + forwardZ * PROP_CONTACT_PARAMS.branchApproachLookAhead;
+      const aheadDX = aheadX - collider.x;
+      const aheadDZ = aheadZ - collider.z;
+      const aheadAlong = clamp(aheadDX * collider.dirX + aheadDZ * collider.dirZ, -collider.halfLength, collider.halfLength);
+      const aheadPX = collider.x + collider.dirX * aheadAlong;
+      const aheadPZ = collider.z + collider.dirZ * aheadAlong;
+      const aheadDistance = Math.hypot(aheadX - aheadPX, aheadZ - aheadPZ);
+      const avoidRadius = collider.avoidRadius + 0.42;
+      if (aheadDistance < avoidRadius + 1.4) {
+        const aheadNX = aheadDistance > 0.001 ? (aheadX - aheadPX) / aheadDistance : nx;
+        const aheadNZ = aheadDistance > 0.001 ? (aheadZ - aheadPZ) / aheadDistance : nz;
+        const avoidStrength = clamp(1 - aheadDistance / (avoidRadius + 1.4), 0, 1);
+        steering.x += aheadNX * avoidStrength * 0.66 + collider.dirX * alongSign * avoidStrength * 0.46;
+        steering.z += aheadNZ * avoidStrength * 0.66 + collider.dirZ * alongSign * avoidStrength * 0.46;
+      }
+
+      if (distance >= avoidRadius) continue;
+      const push = Math.min((avoidRadius - distance) * 0.16, 0.38);
       ant.x += nx * push;
       ant.z += nz * push;
-      steering.x += nx * 0.38;
-      steering.z += nz * 0.38;
+      const slide = clamp(1 - distance / avoidRadius, 0, 1);
+      steering.x += nx * 0.22 + collider.dirX * alongSign * slide * 0.56;
+      steering.z += nz * 0.22 + collider.dirZ * alongSign * slide * 0.56;
     }
   }
 
@@ -2275,16 +2353,16 @@ class TerrainSystem {
     this.addInstancedProps("largeStone", ["soil", "gravel", "sand", "path"], Math.round(5 * density), new THREE.DodecahedronGeometry(0.95, 0), new THREE.MeshStandardMaterial({ color: 0x9b9789, roughness: 0.94, flatShading: true }), { yOffset: 2.6, minScale: 3.2, maxScale: 8.4, tumble: true, stretchY: 0.42, stretchX: 1.18, stretchZ: 0.92, colorJitter: 0.04, castShadow: true });
     this.addFeaturedRocks();
     this.addRootProps(Math.round(15 * density), Math.round(6 * density));
-    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.72, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, clearanceRadius: 1.45, collider: { kind: "leaf", length: 2.65, width: 1.18, surfaceOffset: 0.08, crown: 0.12 }, castShadow: true });
+    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.72, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, clearanceRadius: 1.45, collider: { kind: "leaf", length: 2.65, width: 1.18, surfaceOffset: 0.18, crown: 0.22 }, castShadow: true });
     this.addInstancedProps("largeFallenLeaf", ["leafLitter", "grass", "soil"], Math.round(6 * density), createCurledLeafGeometry(5.4, 2.35, 14, 5), new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: makeLeafLitterTexture({ base: "#b9652a", light: "#e9aa62", dark: "#6d3c1d" }),
       roughness: 0.9,
       side: THREE.DoubleSide,
       alphaTest: 0.24,
-    }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, collider: { kind: "leaf", length: 5.4, width: 2.35, surfaceOffset: 0.1, crown: 0.16 }, castShadow: true });
-    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.55, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, clearanceRadius: 1.35, collider: { kind: "branch", length: 2.35, radius: 0.115, avoidPadding: 0.45, surfaceRadiusScale: 0.9 }, colorJitter: 0.035, castShadow: true });
-    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.55, surfaceRadiusScale: 0.88 }, colorJitter: 0.03, castShadow: true });
+    }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, collider: { kind: "leaf", length: 5.4, width: 2.35, surfaceOffset: 0.22, crown: 0.28 }, castShadow: true });
+    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.55, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, clearanceRadius: 1.35, collider: { kind: "branch", length: 2.35, radius: 0.115, avoidPadding: 0.45, surfaceRadiusScale: 0.9, climbable: true }, colorJitter: 0.035, castShadow: true });
+    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.78, surfaceRadiusScale: 0.88, climbable: false }, colorJitter: 0.03, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(9 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0xa7aba2, roughness: 0.86 }), { yOffset: 0.12, minScale: 3.0, maxScale: 8.2, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
     this.addInstancedProps("mudClump", "mud", Math.round(17 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x8b7352, roughness: 0.98 }), { yOffset: 0.075, minScale: 1.3, maxScale: 4.0, tumble: true, stretchY: 0.36 });
@@ -2449,8 +2527,8 @@ class TerrainSystem {
         sideZ: dirX,
         halfLength,
         halfWidth,
-        surfaceY: this.dummy.position.y + 0.12,
-        crown: 0.18,
+        surfaceY: this.dummy.position.y + 0.22,
+        crown: 0.32,
         boundsRadius: Math.hypot(halfLength, halfWidth) + 2,
       });
     }
@@ -2487,6 +2565,7 @@ class TerrainSystem {
         halfLength: spec.length * 0.5,
         radius: spec.radius,
         avoidRadius: spec.radius + 0.6,
+        climbable: false,
         surfaceY: this.dummy.position.y + spec.radius * 0.75,
         crown: spec.radius * 0.18,
         boundsRadius: spec.length * 0.5 + spec.radius + 2,
@@ -3183,7 +3262,12 @@ class Ant3D {
     }
 
     this.fieldGradient = { x: 0, z: 0 };
-    this.propSurface = { hit: false, y: 0, slow: 1 };
+    this.propSurface = { hit: false, y: 0, slow: 1, pitch: 0, roll: 0, kind: null, climbable: false, edgeFactor: 0 };
+    this.surfaceY = sim.getSurfaceY(this.x, this.z, 0.72);
+    this.surfacePitch = 0;
+    this.surfaceRoll = 0;
+    this.surfaceSlow = 1;
+    this.surfaceKind = null;
     this.insideNest = false;
     this.nestTimer = 0;
     this.renderStateScratch = {
@@ -3192,6 +3276,14 @@ class Ant3D {
       angle: this.angle,
       y: 0,
       scale: 1,
+      pitch: 0,
+      roll: 0,
+      yawSin: 0,
+      yawCos: 1,
+      pitchSin: 0,
+      pitchCos: 1,
+      rollSin: 0,
+      rollCos: 1,
       state: this.state,
       carrying: 0,
     };
@@ -3250,6 +3342,7 @@ class Ant3D {
     this.energy = clamp(this.energy + dt * 0.012, 0, 1);
     this.lastTrail += dt;
     this.trailFollowing = Math.max(0, this.trailFollowing - dt * 2.4);
+    this.updateSurfaceContact(dt, sim);
 
     const sensed = this.sense(sim);
     if (sensed.waterDepth > 0.08) {
@@ -3371,6 +3464,22 @@ class Ant3D {
       estimate.z = -this.pathZ / distance;
     }
     return estimate;
+  }
+
+  updateSurfaceContact(dt, sim) {
+    const groundY = sim.getSurfaceY(this.x, this.z, 0.72);
+    const contact = sim.terrain?.samplePropContact(this.x, this.z, this.angle, this.propSurface);
+    const targetY = contact?.hit ? Math.max(groundY, contact.y + 0.72) : groundY;
+    const targetPitch = contact?.hit ? contact.pitch : 0;
+    const targetRoll = contact?.hit ? contact.roll : 0;
+    const lerpScale = dt / FIXED_DT;
+    const heightLerp = clamp(PROP_CONTACT_PARAMS.surfaceHeightLerp * lerpScale, 0, 1);
+    const tiltLerp = clamp(PROP_CONTACT_PARAMS.surfaceTiltLerp * lerpScale, 0, 1);
+    this.surfaceY += (targetY - this.surfaceY) * heightLerp;
+    this.surfacePitch += (targetPitch - this.surfacePitch) * tiltLerp;
+    this.surfaceRoll += (targetRoll - this.surfaceRoll) * tiltLerp;
+    this.surfaceSlow = contact?.hit ? contact.slow : 1;
+    this.surfaceKind = contact?.hit ? contact.kind : null;
   }
 
   updateInsideNest(dt, sim) {
@@ -4082,15 +4191,51 @@ class Ant3D {
       }
     }
     for (const branch of sim.branches) {
-      const p = closestPointOnSegment(this.x, this.z, branch.x1, branch.z1, branch.x2, branch.z2);
-      const d = distance2(this.x, this.z, p.x, p.z);
-      if (d < branch.width + 0.8) {
-        const nx = (this.x - p.x) / (d || 1);
-        const nz = (this.z - p.z) / (d || 1);
-        this.x = p.x + nx * (branch.width + 0.8);
-        this.z = p.z + nz * (branch.width + 0.8);
-        steering.x += nx;
-        steering.z += nz;
+      const vx = branch.x2 - branch.x1;
+      const vz = branch.z2 - branch.z1;
+      const length = Math.hypot(vx, vz) || 1;
+      const dirX = vx / length;
+      const dirZ = vz / length;
+      const t = clamp(((this.x - branch.x1) * vx + (this.z - branch.z1) * vz) / (length * length), 0, 1);
+      const px = branch.x1 + vx * t;
+      const pz = branch.z1 + vz * t;
+      let nx = this.x - px;
+      let nz = this.z - pz;
+      let d = Math.hypot(nx, nz);
+      if (d < 0.001) {
+        nx = -dirZ;
+        nz = dirX;
+        d = 1;
+      } else {
+        nx /= d;
+        nz /= d;
+      }
+
+      const forwardX = Math.sin(this.angle);
+      const forwardZ = Math.cos(this.angle);
+      const aheadX = this.x + forwardX * 4.4;
+      const aheadZ = this.z + forwardZ * 4.4;
+      const aheadT = clamp(((aheadX - branch.x1) * vx + (aheadZ - branch.z1) * vz) / (length * length), 0, 1);
+      const aheadPX = branch.x1 + vx * aheadT;
+      const aheadPZ = branch.z1 + vz * aheadT;
+      const aheadDistance = distance2(aheadX, aheadZ, aheadPX, aheadPZ);
+      const avoidRadius = branch.width + 1.1;
+      const alongSign = forwardX * dirX + forwardZ * dirZ >= 0 ? 1 : -1;
+      if (aheadDistance < avoidRadius + 1.6) {
+        const avoidStrength = clamp(1 - aheadDistance / (avoidRadius + 1.6), 0, 1);
+        const aheadNX = aheadDistance > 0.001 ? (aheadX - aheadPX) / aheadDistance : nx;
+        const aheadNZ = aheadDistance > 0.001 ? (aheadZ - aheadPZ) / aheadDistance : nz;
+        steering.x += aheadNX * avoidStrength * 0.72 + dirX * alongSign * avoidStrength * 0.48;
+        steering.z += aheadNZ * avoidStrength * 0.72 + dirZ * alongSign * avoidStrength * 0.48;
+      }
+
+      if (d < avoidRadius) {
+        const push = Math.min((avoidRadius - d) * 0.16, 0.36);
+        this.x += nx * push;
+        this.z += nz * push;
+        const slide = clamp(1 - d / avoidRadius, 0, 1);
+        steering.x += nx * 0.24 + dirX * alongSign * slide * 0.6;
+        steering.z += nz * 0.24 + dirZ * alongSign * slide * 0.6;
       }
     }
     sim.terrain?.resolvePropCollisions(this, steering);
@@ -4117,6 +4262,7 @@ class Ant3D {
     if (this.carrying > 0) speed *= getFoodType(this.carryingFoodType).carrySpeedMultiplier ?? 0.75;
     speed *= clamp(1 - this.wet * 0.3, 0.34, 1);
     speed *= sim.terrain?.sampleMovementMultiplier(this.x, this.z) ?? 1;
+    speed *= this.surfaceSlow;
     speed *= sim.timeScale;
 
     let moveX = Math.sin(this.angle) * speed * dt;
@@ -4196,11 +4342,16 @@ class Ant3D {
     state.x = x;
     state.z = z;
     state.angle = this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha;
-    const groundY = sim.getSurfaceY(x, z, 0.72);
-    const propSurface = sim.terrain?.samplePropSurface(x, z, this.propSurface);
-    const propY = propSurface?.hit ? propSurface.y + 0.72 : groundY;
-    state.y = Math.max(groundY, propY) + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03;
+    state.y = this.surfaceY + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03;
     state.scale = this.state === "stunned" ? 0.82 : 1;
+    state.pitch = this.surfacePitch;
+    state.roll = this.surfaceRoll;
+    state.yawSin = Math.sin(state.angle);
+    state.yawCos = Math.cos(state.angle);
+    state.pitchSin = Math.sin(state.pitch);
+    state.pitchCos = Math.cos(state.pitch);
+    state.rollSin = Math.sin(state.roll);
+    state.rollCos = Math.cos(state.roll);
     state.state = this.state;
     state.carrying = this.carrying;
     return state;
@@ -4310,14 +4461,8 @@ class AntRenderSystem {
   }
 
   composeLocalMatrix(renderState, localX, localY, localZ, scaleX, scaleY, scaleZ) {
-    const sin = Math.sin(renderState.angle);
-    const cos = Math.cos(renderState.angle);
-    this.dummy.position.set(
-      renderState.x + localX * cos + localZ * sin,
-      renderState.y + localY * renderState.scale,
-      renderState.z - localX * sin + localZ * cos,
-    );
-    this.dummy.rotation.set(0, renderState.angle, 0);
+    this.localCoordsToWorld(renderState, localX, localY, localZ, this.dummy.position);
+    this.dummy.rotation.set(renderState.pitch, renderState.angle, renderState.roll, "YXZ");
     this.dummy.scale.set(scaleX * renderState.scale, scaleY * renderState.scale, scaleZ * renderState.scale);
     this.dummy.updateMatrix();
   }
@@ -4337,15 +4482,21 @@ class AntRenderSystem {
   }
 
   localPointToWorld(renderState, point, target) {
-    const sin = Math.sin(renderState.angle);
-    const cos = Math.cos(renderState.angle);
-    const localX = point[0] * renderState.scale;
-    const localY = point[1] * renderState.scale;
-    const localZ = point[2] * renderState.scale;
+    this.localCoordsToWorld(renderState, point[0], point[1], point[2], target);
+  }
+
+  localCoordsToWorld(renderState, sourceX, sourceY, sourceZ, target) {
+    const localX = sourceX * renderState.scale;
+    const localY = sourceY * renderState.scale;
+    const localZ = sourceZ * renderState.scale;
+    const rolledX = localX * renderState.rollCos - localY * renderState.rollSin;
+    const rolledY = localX * renderState.rollSin + localY * renderState.rollCos;
+    const pitchedY = rolledY * renderState.pitchCos + localZ * renderState.pitchSin;
+    const pitchedZ = -rolledY * renderState.pitchSin + localZ * renderState.pitchCos;
     target.set(
-      renderState.x + localX * cos + localZ * sin,
-      renderState.y + localY,
-      renderState.z - localX * sin + localZ * cos,
+      renderState.x + rolledX * renderState.yawCos + pitchedZ * renderState.yawSin,
+      renderState.y + pitchedY,
+      renderState.z - rolledX * renderState.yawSin + pitchedZ * renderState.yawCos,
     );
   }
 
