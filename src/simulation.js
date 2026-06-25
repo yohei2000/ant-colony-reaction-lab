@@ -129,6 +129,10 @@ const rand = (min, max) => min + Math.random() * (max - min);
 const chance = (p) => Math.random() < p;
 const distance2 = (ax, az, bx, bz) => Math.hypot(ax - bx, az - bz);
 const normAngle = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle));
+const smooth01 = (value) => {
+  const t = clamp(value, 0, 1);
+  return t * t * (3 - 2 * t);
+};
 
 function hashSeed(value) {
   let hash = 2166136261;
@@ -214,8 +218,17 @@ const PROP_CONTACT_PARAMS = {
   branchApproachLookAhead: 4.8,
   surfaceHeightLerp: 0.18,
   surfaceTiltLerp: 0.2,
+  branchSurfaceHeightLerp: 0.1,
+  branchSurfaceTiltLerp: 0.16,
+  branchWallMountMargin: 0.52,
+  branchWallMountScale: 1.08,
+  branchWallPitch: 0.72,
+  branchWallRoll: 0.46,
+  branchTopPitch: 0.18,
   maxPitch: 0.28,
   maxRoll: 0.22,
+  branchMaxPitch: 0.78,
+  branchMaxRoll: 0.54,
 };
 
 const TERRAIN_TYPES = {
@@ -1677,7 +1690,22 @@ class TerrainSystem {
     this.propColliderInvCellSize = 1 / this.propColliderCellSize;
     this.propColliderGridSize = Math.ceil(this.fieldSize / this.propColliderCellSize) + 1;
     this.propColliderGrid = Array.from({ length: this.propColliderGridSize * this.propColliderGridSize }, () => []);
-    this.propSurfaceScratch = { hit: false, y: 0, slow: 1, pitch: 0, roll: 0, kind: null, climbable: false, edgeFactor: 0 };
+    this.propSurfaceScratch = {
+      hit: false,
+      y: 0,
+      slow: 1,
+      pitch: 0,
+      roll: 0,
+      kind: null,
+      climbable: false,
+      edgeFactor: 0,
+      wallFactor: 0,
+      topFactor: 0,
+      centerForward: 0,
+      centerRight: 0,
+      branchRadius: 0,
+      contactRadius: 0,
+    };
     this.visuals = [];
     this.ownedGeometries = [];
     this.ownedMaterials = [];
@@ -2016,6 +2044,7 @@ class TerrainSystem {
         radius,
         avoidRadius: radius + (config.avoidPadding ?? 0.55),
         climbable: config.climbable ?? radius <= PROP_CONTACT_PARAMS.branchClimbRadiusMax,
+        centerY: baseHeight + yOffset,
         surfaceY: baseHeight + yOffset + radius * (config.surfaceRadiusScale ?? 0.75),
         crown: radius * 0.18,
         boundsRadius: length * 0.5 + radius + 2,
@@ -2032,6 +2061,12 @@ class TerrainSystem {
     target.kind = null;
     target.climbable = false;
     target.edgeFactor = 0;
+    target.wallFactor = 0;
+    target.topFactor = 0;
+    target.centerForward = 0;
+    target.centerRight = 0;
+    target.branchRadius = 0;
+    target.contactRadius = 0;
     const cell = this.propColliderGrid[this.propColliderCellIndex(x, z)];
     if (!cell || cell.length === 0) return target;
 
@@ -2070,6 +2105,12 @@ class TerrainSystem {
           target.kind = "leaf";
           target.climbable = true;
           target.edgeFactor = edgeFactor;
+          target.wallFactor = 0;
+          target.topFactor = 0;
+          target.centerForward = 0;
+          target.centerRight = 0;
+          target.branchRadius = 0;
+          target.contactRadius = 0;
         }
       } else if (collider.kind === "branch") {
         if (!collider.climbable) continue;
@@ -2077,25 +2118,43 @@ class TerrainSystem {
         const px = collider.x + collider.dirX * along;
         const pz = collider.z + collider.dirZ * along;
         const distance = Math.hypot(x - px, z - pz);
-        const contactRadius = collider.radius + 0.34;
+        const radius = Math.max(0.18, collider.radius);
+        const mountBand = Math.max(PROP_CONTACT_PARAMS.branchWallMountMargin, radius * PROP_CONTACT_PARAMS.branchWallMountScale);
+        const contactRadius = radius + mountBand;
         if (distance > contactRadius) continue;
-        const edgeFactor = clamp(1 - distance / contactRadius, 0, 1);
-        const y = collider.surfaceY + collider.crown * Math.sqrt(edgeFactor);
+        const mountBlend = smooth01((contactRadius - distance) / mountBand);
+        const cappedDistance = Math.min(distance, radius);
+        const cylinderLift = Math.sqrt(Math.max(0, radius * radius - cappedDistance * cappedDistance));
+        const groundY = this.sampleHeight(px, pz);
+        const centerY = collider.centerY ?? collider.surfaceY - radius * 0.8;
+        const cylinderY = centerY + cylinderLift;
+        const y = groundY + (cylinderY - groundY) * mountBlend;
         if (y > bestY) {
           bestY = y;
           const nx = distance > 0.001 ? (x - px) / distance : -collider.dirZ;
           const nz = distance > 0.001 ? (z - pz) / distance : collider.dirX;
-          const slopeScale = -edgeFactor * 0.36;
-          const gradX = nx * slopeScale;
-          const gradZ = nz * slopeScale;
+          const lateral = clamp(distance / radius, 0, 1);
+          const wallFactor = mountBlend * smooth01((lateral - 0.18) / 0.82);
+          const topFactor = mountBlend * (1 - smooth01((lateral - 0.12) / 0.72));
+          const centerForward = -(nx * forwardX + nz * forwardZ);
+          const centerRight = -(nx * rightX + nz * rightZ);
+          const wallPitch = centerForward * PROP_CONTACT_PARAMS.branchWallPitch * wallFactor;
+          const wallRoll = centerRight * PROP_CONTACT_PARAMS.branchWallRoll * wallFactor;
+          const topPitch = centerForward * PROP_CONTACT_PARAMS.branchTopPitch * topFactor;
           target.hit = true;
           target.y = bestY;
-          target.slow = 0.62 + edgeFactor * 0.18;
-          target.pitch = clamp((gradX * forwardX + gradZ * forwardZ) * 0.75, -PROP_CONTACT_PARAMS.maxPitch, PROP_CONTACT_PARAMS.maxPitch);
-          target.roll = clamp((gradX * rightX + gradZ * rightZ) * 0.82, -PROP_CONTACT_PARAMS.maxRoll, PROP_CONTACT_PARAMS.maxRoll);
+          target.slow = clamp(0.34 + topFactor * 0.28 + (1 - wallFactor) * 0.08, 0.34, 0.78);
+          target.pitch = clamp(wallPitch + topPitch, -PROP_CONTACT_PARAMS.branchMaxPitch, PROP_CONTACT_PARAMS.branchMaxPitch);
+          target.roll = clamp(wallRoll, -PROP_CONTACT_PARAMS.branchMaxRoll, PROP_CONTACT_PARAMS.branchMaxRoll);
           target.kind = "branch";
           target.climbable = true;
-          target.edgeFactor = edgeFactor;
+          target.edgeFactor = mountBlend;
+          target.wallFactor = wallFactor;
+          target.topFactor = topFactor;
+          target.centerForward = centerForward;
+          target.centerRight = centerRight;
+          target.branchRadius = radius;
+          target.contactRadius = contactRadius;
         }
       }
     }
@@ -2134,11 +2193,15 @@ class TerrainSystem {
 
       const branchDot = forwardX * collider.dirX + forwardZ * collider.dirZ;
       const alongSign = branchDot >= 0 ? 1 : -1;
-      const contactRadius = collider.radius + 0.34;
+      const largeBranch = clamp((collider.radius - 0.55) / 1.25, 0, 1);
+      const mountBand = Math.max(PROP_CONTACT_PARAMS.branchWallMountMargin, collider.radius * PROP_CONTACT_PARAMS.branchWallMountScale);
+      const contactRadius = collider.radius + mountBand;
       if (collider.climbable && distance < contactRadius) {
-        const centerPull = clamp(1 - distance / contactRadius, 0, 1) * 0.16;
-        steering.x += collider.dirX * alongSign * 0.32 - nx * centerPull;
-        steering.z += collider.dirZ * alongSign * 0.32 - nz * centerPull;
+        const wallPull = clamp(1 - distance / contactRadius, 0, 1);
+        const centerPull = wallPull * (0.16 + largeBranch * 0.26);
+        const alongGain = 0.3 * (1 - largeBranch * 0.78);
+        steering.x += collider.dirX * alongSign * alongGain - nx * centerPull;
+        steering.z += collider.dirZ * alongSign * alongGain - nz * centerPull;
         continue;
       }
 
@@ -2157,13 +2220,16 @@ class TerrainSystem {
           const aheadNX = aheadDistance > 0.001 ? (aheadX - aheadPX) / aheadDistance : nx;
           const aheadNZ = aheadDistance > 0.001 ? (aheadZ - aheadPZ) / aheadDistance : nz;
           const mountStrength = clamp(1 - aheadDistance / mountRadius, 0, 1);
-          steering.x += -aheadNX * mountStrength * 0.54 + collider.dirX * alongSign * mountStrength * 0.42;
-          steering.z += -aheadNZ * mountStrength * 0.54 + collider.dirZ * alongSign * mountStrength * 0.42;
+          const alongGain = 0.42 * (1 - largeBranch * 0.74);
+          const centerGain = 0.54 + largeBranch * 0.28;
+          steering.x += -aheadNX * mountStrength * centerGain + collider.dirX * alongSign * mountStrength * alongGain;
+          steering.z += -aheadNZ * mountStrength * centerGain + collider.dirZ * alongSign * mountStrength * alongGain;
         }
         if (distance < avoidRadius) {
-          const centerPull = clamp(1 - distance / avoidRadius, 0, 1) * 0.28;
-          steering.x += -nx * centerPull + collider.dirX * alongSign * 0.32;
-          steering.z += -nz * centerPull + collider.dirZ * alongSign * 0.32;
+          const centerPull = clamp(1 - distance / avoidRadius, 0, 1) * (0.28 + largeBranch * 0.2);
+          const alongGain = 0.32 * (1 - largeBranch * 0.72);
+          steering.x += -nx * centerPull + collider.dirX * alongSign * alongGain;
+          steering.z += -nz * centerPull + collider.dirZ * alongSign * alongGain;
         }
         continue;
       }
@@ -2582,6 +2648,7 @@ class TerrainSystem {
         radius: spec.radius,
         avoidRadius: spec.radius + 0.6,
         climbable: true,
+        centerY: this.dummy.position.y,
         surfaceY: this.dummy.position.y + spec.radius * 0.75,
         crown: spec.radius * 0.18,
         boundsRadius: spec.length * 0.5 + spec.radius + 2,
@@ -3278,13 +3345,30 @@ class Ant3D {
     }
 
     this.fieldGradient = { x: 0, z: 0 };
-    this.propSurface = { hit: false, y: 0, slow: 1, pitch: 0, roll: 0, kind: null, climbable: false, edgeFactor: 0 };
-    this.branchSurface = { hit: false, y: 0, slow: 1, pitch: 0, roll: 0, kind: null, climbable: false, edgeFactor: 0 };
+    this.propSurface = {
+      hit: false,
+      y: 0,
+      slow: 1,
+      pitch: 0,
+      roll: 0,
+      kind: null,
+      climbable: false,
+      edgeFactor: 0,
+      wallFactor: 0,
+      topFactor: 0,
+      centerForward: 0,
+      centerRight: 0,
+      branchRadius: 0,
+      contactRadius: 0,
+    };
+    this.branchSurface = { ...this.propSurface };
     this.surfaceY = sim.getSurfaceY(this.x, this.z, 0.72);
     this.surfacePitch = 0;
     this.surfaceRoll = 0;
     this.surfaceSlow = 1;
     this.surfaceKind = null;
+    this.branchClimbMode = "ground";
+    this.branchClimbIntensity = 0;
     this.insideNest = false;
     this.nestTimer = 0;
     this.renderStateScratch = {
@@ -3491,9 +3575,21 @@ class Ant3D {
     const targetY = contact?.hit ? Math.max(groundY, contact.y + 0.72) : groundY;
     const targetPitch = contact?.hit ? contact.pitch : 0;
     const targetRoll = contact?.hit ? contact.roll : 0;
+    const isBranchContact = contact?.hit && contact.kind === "branch";
+    if (isBranchContact) {
+      if (contact.wallFactor > 0.48) {
+        this.branchClimbMode = contact.centerForward > 0.12 ? "mounting" : contact.centerForward < -0.12 ? "descending" : "climbing";
+      } else {
+        this.branchClimbMode = "crossing";
+      }
+      this.branchClimbIntensity += (clamp((contact.wallFactor ?? 0) + (contact.topFactor ?? 0) * 0.52, 0, 1) - this.branchClimbIntensity) * 0.22;
+    } else {
+      this.branchClimbIntensity += (0 - this.branchClimbIntensity) * 0.18;
+      if (this.branchClimbIntensity < 0.03) this.branchClimbMode = "ground";
+    }
     const lerpScale = dt / FIXED_DT;
-    const heightLerp = clamp(PROP_CONTACT_PARAMS.surfaceHeightLerp * lerpScale, 0, 1);
-    const tiltLerp = clamp(PROP_CONTACT_PARAMS.surfaceTiltLerp * lerpScale, 0, 1);
+    const heightLerp = clamp((isBranchContact ? PROP_CONTACT_PARAMS.branchSurfaceHeightLerp : PROP_CONTACT_PARAMS.surfaceHeightLerp) * lerpScale, 0, 1);
+    const tiltLerp = clamp((isBranchContact ? PROP_CONTACT_PARAMS.branchSurfaceTiltLerp : PROP_CONTACT_PARAMS.surfaceTiltLerp) * lerpScale, 0, 1);
     this.surfaceY += (targetY - this.surfaceY) * heightLerp;
     this.surfacePitch += (targetPitch - this.surfacePitch) * tiltLerp;
     this.surfaceRoll += (targetRoll - this.surfaceRoll) * tiltLerp;
@@ -3510,6 +3606,10 @@ class Ant3D {
     this.carryingLoad = 0;
     this.carryingFoodValue = 0;
     this.homeTimer = 0;
+    this.branchClimbMode = "ground";
+    this.branchClimbIntensity = 0;
+    this.surfaceSlow = 1;
+    this.surfaceKind = null;
     this.x = sim.nest.x;
     this.z = sim.nest.z;
     this.prevX = this.x;
@@ -4240,19 +4340,24 @@ class Ant3D {
       const aheadDistance = distance2(aheadX, aheadZ, aheadPX, aheadPZ);
       const avoidRadius = branch.width + 1.1;
       const alongSign = forwardX * dirX + forwardZ * dirZ >= 0 ? 1 : -1;
+      const largeBranch = clamp((branch.width - 1.2) / 2.4, 0, 1);
       const mountRadius = avoidRadius + 1.6;
       if (aheadDistance < mountRadius) {
         const mountStrength = clamp(1 - aheadDistance / mountRadius, 0, 1);
         const aheadNX = aheadDistance > 0.001 ? (aheadX - aheadPX) / aheadDistance : nx;
         const aheadNZ = aheadDistance > 0.001 ? (aheadZ - aheadPZ) / aheadDistance : nz;
-        steering.x += -aheadNX * mountStrength * 0.5 + dirX * alongSign * mountStrength * 0.44;
-        steering.z += -aheadNZ * mountStrength * 0.5 + dirZ * alongSign * mountStrength * 0.44;
+        const centerGain = 0.5 + largeBranch * 0.34;
+        const alongGain = 0.44 * (1 - largeBranch * 0.76);
+        steering.x += -aheadNX * mountStrength * centerGain + dirX * alongSign * mountStrength * alongGain;
+        steering.z += -aheadNZ * mountStrength * centerGain + dirZ * alongSign * mountStrength * alongGain;
       }
 
       if (d < avoidRadius) {
         const slide = clamp(1 - d / avoidRadius, 0, 1);
-        steering.x += -nx * slide * 0.24 + dirX * alongSign * slide * 0.56;
-        steering.z += -nz * slide * 0.24 + dirZ * alongSign * slide * 0.56;
+        const centerGain = 0.24 + largeBranch * 0.2;
+        const alongGain = 0.56 * (1 - largeBranch * 0.74);
+        steering.x += -nx * slide * centerGain + dirX * alongSign * slide * alongGain;
+        steering.z += -nz * slide * centerGain + dirZ * alongSign * slide * alongGain;
       }
     }
     sim.terrain?.resolvePropCollisions(this, steering);
@@ -4359,7 +4464,7 @@ class Ant3D {
     state.x = x;
     state.z = z;
     state.angle = this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha;
-    state.y = this.surfaceY + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03;
+    state.y = this.surfaceY + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03 * (1 - this.branchClimbIntensity * 0.55);
     state.scale = this.state === "stunned" ? 0.82 : 1;
     state.pitch = this.surfacePitch;
     state.roll = this.surfaceRoll;
@@ -5077,6 +5182,12 @@ class AntColony3D {
     target.kind = null;
     target.climbable = false;
     target.edgeFactor = 0;
+    target.wallFactor = 0;
+    target.topFactor = 0;
+    target.centerForward = 0;
+    target.centerRight = 0;
+    target.branchRadius = 0;
+    target.contactRadius = 0;
     if (this.branches.length === 0) return target;
 
     const forwardX = Math.sin(angle);
@@ -5095,28 +5206,45 @@ class AntColony3D {
       const dx = x - px;
       const dz = z - pz;
       const distance = Math.hypot(dx, dz);
-      const surfaceRadius = branch.width * 0.58;
-      const contactRadius = branch.width * 0.74;
+      const radius = Math.max(0.32, branch.width * 0.58);
+      const mountBand = Math.max(PROP_CONTACT_PARAMS.branchWallMountMargin, radius * PROP_CONTACT_PARAMS.branchWallMountScale);
+      const contactRadius = radius + mountBand;
       if (distance > contactRadius) continue;
 
-      const edgeFactor = clamp(1 - distance / contactRadius, 0, 1);
-      const y = this.getSurfaceY(px, pz, surfaceRadius * 0.92) + surfaceRadius * 0.14 * Math.sqrt(edgeFactor);
+      const mountBlend = smooth01((contactRadius - distance) / mountBand);
+      const cappedDistance = Math.min(distance, radius);
+      const cylinderLift = Math.sqrt(Math.max(0, radius * radius - cappedDistance * cappedDistance));
+      const groundY = this.terrain?.sampleHeight(px, pz) ?? 0;
+      const centerY = this.getSurfaceY(px, pz, radius * 1.08);
+      const cylinderY = centerY + cylinderLift;
+      const y = groundY + (cylinderY - groundY) * mountBlend;
       if (y <= bestY) continue;
 
       bestY = y;
       const nx = distance > 0.001 ? dx / distance : -vz / Math.sqrt(lenSq);
       const nz = distance > 0.001 ? dz / distance : vx / Math.sqrt(lenSq);
-      const slopeScale = -edgeFactor * 0.28;
-      const gradX = nx * slopeScale;
-      const gradZ = nz * slopeScale;
+      const lateral = clamp(distance / radius, 0, 1);
+      const wallFactor = mountBlend * smooth01((lateral - 0.18) / 0.82);
+      const topFactor = mountBlend * (1 - smooth01((lateral - 0.12) / 0.72));
+      const centerForward = -(nx * forwardX + nz * forwardZ);
+      const centerRight = -(nx * rightX + nz * rightZ);
+      const wallPitch = centerForward * PROP_CONTACT_PARAMS.branchWallPitch * wallFactor;
+      const wallRoll = centerRight * PROP_CONTACT_PARAMS.branchWallRoll * wallFactor;
+      const topPitch = centerForward * PROP_CONTACT_PARAMS.branchTopPitch * topFactor;
       target.hit = true;
       target.y = y;
-      target.slow = 0.58 + edgeFactor * 0.2;
-      target.pitch = clamp((gradX * forwardX + gradZ * forwardZ) * 0.72, -PROP_CONTACT_PARAMS.maxPitch, PROP_CONTACT_PARAMS.maxPitch);
-      target.roll = clamp((gradX * rightX + gradZ * rightZ) * 0.82, -PROP_CONTACT_PARAMS.maxRoll, PROP_CONTACT_PARAMS.maxRoll);
+      target.slow = clamp(0.32 + topFactor * 0.3 + (1 - wallFactor) * 0.08, 0.32, 0.74);
+      target.pitch = clamp(wallPitch + topPitch, -PROP_CONTACT_PARAMS.branchMaxPitch, PROP_CONTACT_PARAMS.branchMaxPitch);
+      target.roll = clamp(wallRoll, -PROP_CONTACT_PARAMS.branchMaxRoll, PROP_CONTACT_PARAMS.branchMaxRoll);
       target.kind = "branch";
       target.climbable = true;
-      target.edgeFactor = edgeFactor;
+      target.edgeFactor = mountBlend;
+      target.wallFactor = wallFactor;
+      target.topFactor = topFactor;
+      target.centerForward = centerForward;
+      target.centerRight = centerRight;
+      target.branchRadius = radius;
+      target.contactRadius = contactRadius;
     }
 
     return target;
