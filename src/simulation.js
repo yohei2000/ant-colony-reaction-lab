@@ -1561,6 +1561,7 @@ class DebugPanel {
       `pheromone ${this.sim.pheromones?.mode ?? "off"} ${this.sim.pheromones?.resolution ?? 0}`,
       `terrain ${terrain?.id ?? "-"} move ${terrainMove.toFixed(2)} decay ${(terrainPheromone?.decay ?? 1).toFixed(2)} diff ${(terrainPheromone?.diffusion ?? 1).toFixed(2)}`,
       `terrainProps ${this.sim.terrain?.propInstanceCount ?? 0}`,
+      `propColliders ${this.sim.terrain?.propColliders.length ?? 0}`,
     ].join("\n");
     this.elapsed = 0;
     this.frames = 0;
@@ -1590,6 +1591,12 @@ class TerrainSystem {
     this.propUp = new THREE.Vector3(0, 1, 0);
     this.rootSegments = [];
     this.puddlePatches = [];
+    this.propColliders = [];
+    this.propColliderCellSize = 24;
+    this.propColliderInvCellSize = 1 / this.propColliderCellSize;
+    this.propColliderGridSize = Math.ceil(this.fieldSize / this.propColliderCellSize) + 1;
+    this.propColliderGrid = Array.from({ length: this.propColliderGridSize * this.propColliderGridSize }, () => []);
+    this.propSurfaceScratch = { hit: false, y: 0, slow: 1 };
     this.visuals = [];
     this.ownedGeometries = [];
     this.ownedMaterials = [];
@@ -1622,6 +1629,7 @@ class TerrainSystem {
     this.ownedMaterials.length = 0;
     this.mesh = null;
     this.propInstanceCount = 0;
+    this.clearPropColliders();
   }
 
   setEffectsEnabled(enabled) {
@@ -1853,6 +1861,164 @@ class TerrainSystem {
     return maxHeight;
   }
 
+  clearPropColliders() {
+    this.propColliders.length = 0;
+    for (const cell of this.propColliderGrid) cell.length = 0;
+  }
+
+  propColliderCellCoord(value) {
+    return clamp(Math.floor((value + this.fieldRadius) * this.propColliderInvCellSize), 0, this.propColliderGridSize - 1);
+  }
+
+  propColliderCellIndex(x, z) {
+    return this.propColliderCellCoord(z) * this.propColliderGridSize + this.propColliderCellCoord(x);
+  }
+
+  registerPropCollider(collider) {
+    const boundsRadius = collider.boundsRadius ?? Math.max(collider.halfLength ?? 0, collider.halfWidth ?? collider.radius ?? 0) + 2;
+    collider.boundsRadius = boundsRadius;
+    collider.id = this.propColliders.length;
+    this.propColliders.push(collider);
+
+    const minGX = this.propColliderCellCoord(collider.x - boundsRadius);
+    const maxGX = this.propColliderCellCoord(collider.x + boundsRadius);
+    const minGZ = this.propColliderCellCoord(collider.z - boundsRadius);
+    const maxGZ = this.propColliderCellCoord(collider.z + boundsRadius);
+    for (let gz = minGZ; gz <= maxGZ; gz += 1) {
+      const row = gz * this.propColliderGridSize;
+      for (let gx = minGX; gx <= maxGX; gx += 1) this.propColliderGrid[row + gx].push(collider);
+    }
+  }
+
+  registerInstancedPropCollider(name, x, z, yaw, scale, baseHeight, yOffset, options) {
+    const config = options.collider;
+    if (!config) return;
+    const stretchX = options.stretchX ?? 1;
+    const stretchY = options.stretchY ?? 1;
+    const stretchZ = options.stretchZ ?? 1;
+
+    if (config.kind === "leaf") {
+      const length = config.length * scale * stretchX;
+      const width = config.width * scale * stretchZ;
+      const dirX = Math.cos(yaw);
+      const dirZ = Math.sin(yaw);
+      const halfLength = length * 0.5;
+      const halfWidth = width * 0.5;
+      this.registerPropCollider({
+        kind: "leaf",
+        name,
+        x,
+        z,
+        dirX,
+        dirZ,
+        sideX: -dirZ,
+        sideZ: dirX,
+        halfLength,
+        halfWidth,
+        surfaceY: baseHeight + yOffset + (config.surfaceOffset ?? 0.08),
+        crown: config.crown ?? 0.12,
+        boundsRadius: Math.hypot(halfLength, halfWidth) + 2,
+      });
+    } else if (config.kind === "branch") {
+      const length = config.length * scale * stretchY;
+      const radius = config.radius * scale * Math.max(stretchX, stretchZ);
+      const dirX = Math.sin(yaw);
+      const dirZ = Math.cos(yaw);
+      this.registerPropCollider({
+        kind: "branch",
+        name,
+        x,
+        z,
+        dirX,
+        dirZ,
+        halfLength: length * 0.5,
+        radius,
+        avoidRadius: radius + (config.avoidPadding ?? 0.55),
+        surfaceY: baseHeight + yOffset + radius * (config.surfaceRadiusScale ?? 0.75),
+        crown: radius * 0.18,
+        boundsRadius: length * 0.5 + radius + 2,
+      });
+    }
+  }
+
+  samplePropSurface(x, z, target = this.propSurfaceScratch) {
+    target.hit = false;
+    target.y = this.sampleHeight(x, z);
+    target.slow = 1;
+    const cell = this.propColliderGrid[this.propColliderCellIndex(x, z)];
+    if (!cell || cell.length === 0) return target;
+
+    let bestY = -Infinity;
+    let bestSlow = 1;
+    for (const collider of cell) {
+      const dx = x - collider.x;
+      const dz = z - collider.z;
+      if (dx * dx + dz * dz > collider.boundsRadius * collider.boundsRadius) continue;
+
+      if (collider.kind === "leaf") {
+        const along = dx * collider.dirX + dz * collider.dirZ;
+        const side = dx * collider.sideX + dz * collider.sideZ;
+        const normalized = (along * along) / (collider.halfLength * collider.halfLength) + (side * side) / (collider.halfWidth * collider.halfWidth);
+        if (normalized > 1) continue;
+        const y = collider.surfaceY + collider.crown * (1 - normalized);
+        if (y > bestY) {
+          bestY = y;
+          bestSlow = 0.95;
+        }
+      } else if (collider.kind === "branch") {
+        const along = clamp(dx * collider.dirX + dz * collider.dirZ, -collider.halfLength, collider.halfLength);
+        const px = collider.x + collider.dirX * along;
+        const pz = collider.z + collider.dirZ * along;
+        const distance = Math.hypot(x - px, z - pz);
+        if (distance > collider.radius + 0.8) continue;
+        const crown = clamp(1 - distance / (collider.radius + 0.8), 0, 1);
+        const y = collider.surfaceY + collider.crown * crown;
+        if (y > bestY) {
+          bestY = y;
+          bestSlow = 0.88;
+        }
+      }
+    }
+
+    if (bestY > -Infinity) {
+      target.hit = true;
+      target.y = bestY;
+      target.slow = bestSlow;
+    }
+    return target;
+  }
+
+  resolvePropCollisions(ant, steering) {
+    const cell = this.propColliderGrid[this.propColliderCellIndex(ant.x, ant.z)];
+    if (!cell || cell.length === 0) return;
+    for (const collider of cell) {
+      if (collider.kind !== "branch") continue;
+      const dx = ant.x - collider.x;
+      const dz = ant.z - collider.z;
+      if (dx * dx + dz * dz > collider.boundsRadius * collider.boundsRadius) continue;
+      const along = clamp(dx * collider.dirX + dz * collider.dirZ, -collider.halfLength, collider.halfLength);
+      const px = collider.x + collider.dirX * along;
+      const pz = collider.z + collider.dirZ * along;
+      let nx = ant.x - px;
+      let nz = ant.z - pz;
+      let distance = Math.hypot(nx, nz);
+      if (distance >= collider.avoidRadius) continue;
+      if (distance < 0.001) {
+        nx = -collider.dirZ;
+        nz = collider.dirX;
+        distance = 1;
+      } else {
+        nx /= distance;
+        nz /= distance;
+      }
+      const push = Math.min((collider.avoidRadius - distance) * 0.35, 0.8);
+      ant.x += nx * push;
+      ant.z += nz * push;
+      steering.x += nx * 0.38;
+      steering.z += nz * 0.38;
+    }
+  }
+
   getVisualSegments() {
     const qualityFactor = this.sim.quality.effectsQuality >= 0.95 ? 1 : 0.76;
     const complexitySegments = this.complexity === "high" ? 128 : this.complexity === "low" ? 64 : 96;
@@ -2037,16 +2203,16 @@ class TerrainSystem {
     this.addInstancedProps("largeStone", ["soil", "gravel", "sand", "path"], Math.round(5 * density), new THREE.DodecahedronGeometry(0.95, 0), new THREE.MeshStandardMaterial({ color: 0x9b9789, roughness: 0.94, flatShading: true }), { yOffset: 2.6, minScale: 3.2, maxScale: 8.4, tumble: true, stretchY: 0.42, stretchX: 1.18, stretchZ: 0.92, colorJitter: 0.04, castShadow: true });
     this.addFeaturedRocks();
     this.addRootProps(Math.round(15 * density), Math.round(6 * density));
-    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.72, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, clearanceRadius: 1.45, castShadow: true });
+    this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.72, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, clearanceRadius: 1.45, collider: { kind: "leaf", length: 2.65, width: 1.18, surfaceOffset: 0.08, crown: 0.12 }, castShadow: true });
     this.addInstancedProps("largeFallenLeaf", ["leafLitter", "grass", "soil"], Math.round(6 * density), createCurledLeafGeometry(5.4, 2.35, 14, 5), new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: makeLeafLitterTexture({ base: "#b9652a", light: "#e9aa62", dark: "#6d3c1d" }),
       roughness: 0.9,
       side: THREE.DoubleSide,
       alphaTest: 0.24,
-    }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, castShadow: true });
-    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.55, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, clearanceRadius: 1.35, colorJitter: 0.035, castShadow: true });
-    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, colorJitter: 0.03, castShadow: true });
+    }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, collider: { kind: "leaf", length: 5.4, width: 2.35, surfaceOffset: 0.1, crown: 0.16 }, castShadow: true });
+    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.55, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, clearanceRadius: 1.35, collider: { kind: "branch", length: 2.35, radius: 0.115, avoidPadding: 0.45, surfaceRadiusScale: 0.9 }, colorJitter: 0.035, castShadow: true });
+    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.55, surfaceRadiusScale: 0.88 }, colorJitter: 0.03, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(9 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0xa7aba2, roughness: 0.86 }), { yOffset: 0.12, minScale: 3.0, maxScale: 8.2, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
     this.addInstancedProps("mudClump", "mud", Math.round(17 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x8b7352, roughness: 0.98 }), { yOffset: 0.075, minScale: 1.3, maxScale: 4.0, tumble: true, stretchY: 0.36 });
@@ -2100,6 +2266,7 @@ class TerrainSystem {
         this.propColor.copy(material.color).offsetHSL((this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter);
         mesh.setColorAt(placed, this.propColor);
       }
+      this.registerInstancedPropCollider(name, x, z, yaw, s, h, yOffset, options);
       placed += 1;
       return true;
     };
@@ -2195,6 +2362,25 @@ class TerrainSystem {
       this.dummy.scale.setScalar(spec.scale);
       this.dummy.updateMatrix();
       leafMesh.setMatrixAt(i, this.dummy.matrix);
+      const dirX = Math.cos(spec.yaw);
+      const dirZ = Math.sin(spec.yaw);
+      const halfLength = 14.2 * spec.scale * 0.5;
+      const halfWidth = 6.2 * spec.scale * 0.5;
+      this.registerPropCollider({
+        kind: "leaf",
+        name: "featuredLeaves",
+        x,
+        z,
+        dirX,
+        dirZ,
+        sideX: -dirZ,
+        sideZ: dirX,
+        halfLength,
+        halfWidth,
+        surfaceY: this.dummy.position.y + 0.12,
+        crown: 0.18,
+        boundsRadius: Math.hypot(halfLength, halfWidth) + 2,
+      });
     }
     leafMesh.instanceMatrix.needsUpdate = true;
     this.propInstanceCount += leafSpecs.length;
@@ -2219,6 +2405,20 @@ class TerrainSystem {
       this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
       branchMesh.setMatrixAt(i, this.dummy.matrix);
+      this.registerPropCollider({
+        kind: "branch",
+        name: "featuredBranches",
+        x,
+        z,
+        dirX: this.propDirection.x,
+        dirZ: this.propDirection.z,
+        halfLength: spec.length * 0.5,
+        radius: spec.radius,
+        avoidRadius: spec.radius + 0.6,
+        surfaceY: this.dummy.position.y + spec.radius * 0.75,
+        crown: spec.radius * 0.18,
+        boundsRadius: spec.length * 0.5 + spec.radius + 2,
+      });
     }
     branchMesh.instanceMatrix.needsUpdate = true;
     this.propInstanceCount += branchSpecs.length;
@@ -2911,6 +3111,7 @@ class Ant3D {
     }
 
     this.fieldGradient = { x: 0, z: 0 };
+    this.propSurface = { hit: false, y: 0, slow: 1 };
     this.renderStateScratch = {
       x: this.x,
       z: this.z,
@@ -3738,6 +3939,7 @@ class Ant3D {
         steering.z += nz;
       }
     }
+    sim.terrain?.resolvePropCollisions(this, steering);
   }
 
   move(dt, sim, steering) {
@@ -3839,7 +4041,10 @@ class Ant3D {
     state.x = x;
     state.z = z;
     state.angle = this.prevAngle + normAngle(this.angle - this.prevAngle) * alpha;
-    state.y = sim.getSurfaceY(x, z, 0.72) + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03;
+    const groundY = sim.getSurfaceY(x, z, 0.72);
+    const propSurface = sim.terrain?.samplePropSurface(x, z, this.propSurface);
+    const propY = propSurface?.hit ? propSurface.y + 0.72 : groundY;
+    state.y = Math.max(groundY, propY) + Math.sin(sim.renderTime * 0.006 + this.id) * 0.03;
     state.scale = this.state === "stunned" ? 0.82 : 1;
     state.state = this.state;
     state.carrying = this.carrying;
