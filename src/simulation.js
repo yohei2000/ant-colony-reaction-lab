@@ -1212,6 +1212,58 @@ function makeIrregularDiscGeometry(segments = 72, jitter = 0.12) {
   return new THREE.ShapeGeometry(shape);
 }
 
+function createNestMoundGeometry({
+  innerRadius = 3.1,
+  outerRadius = 14,
+  height = 2.2,
+  ellipseZ = 0.82,
+  segments = 96,
+  rings = 12,
+} = {}) {
+  const vertices = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let ring = 0; ring <= rings; ring += 1) {
+    const t = ring / rings;
+    const radius = innerRadius + (outerRadius - innerRadius) * t;
+    const rimHeight = height * Math.pow(1 - t, 1.55);
+    const rimLift = Math.exp(-Math.pow((t - 0.08) / 0.15, 2)) * height * 0.16;
+    const shallowDip = Math.exp(-Math.pow((t - 0.44) / 0.2, 2)) * height * 0.05;
+
+    for (let segment = 0; segment <= segments; segment += 1) {
+      const angle = (segment / segments) * Math.PI * 2;
+      const edgeNoise = 1
+        + Math.sin(angle * 3.2 + 0.7) * 0.035 * (1 - t * 0.18)
+        + Math.sin(angle * 7.1 + t * 2.4) * 0.018;
+      const x = Math.cos(angle) * radius * edgeNoise;
+      const z = Math.sin(angle) * radius * ellipseZ * edgeNoise;
+      const grain = Math.sin(angle * 11.0 + ring * 0.83) * 0.035 * height * (1 - t * 0.45);
+      const y = Math.max(0, rimHeight + rimLift - shallowDip + grain);
+      vertices.push(x, y, z);
+      uvs.push(0.5 + Math.cos(angle) * t * 0.5, 0.5 + Math.sin(angle) * t * 0.5);
+    }
+  }
+
+  const stride = segments + 1;
+  for (let ring = 0; ring < rings; ring += 1) {
+    for (let segment = 0; segment < segments; segment += 1) {
+      const a = ring * stride + segment;
+      const b = a + 1;
+      const c = (ring + 1) * stride + segment;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function createCurledLeafGeometry(width = 0.92, length = 0.38, widthSegments = 7, lengthSegments = 3) {
   const geometry = new THREE.PlaneGeometry(width, length, widthSegments, lengthSegments);
   const position = geometry.attributes.position;
@@ -4374,7 +4426,9 @@ class AntColony3D {
         metalness: 0,
       }),
       nest: new THREE.MeshStandardMaterial({ color: 0x6d4e2a, roughness: 0.95 }),
-      nestDark: new THREE.MeshBasicMaterial({ color: 0x1d140e }),
+      nestInner: new THREE.MeshStandardMaterial({ color: 0x2b1b10, roughness: 1, side: THREE.DoubleSide }),
+      nestDark: new THREE.MeshBasicMaterial({ color: 0x120c08 }),
+      nestPebble: new THREE.MeshStandardMaterial({ color: 0x82623a, roughness: 0.98, flatShading: true }),
       antDefault: new THREE.MeshStandardMaterial({ color: 0x18130f, roughness: 0.72 }),
       antAppendage: new THREE.MeshStandardMaterial({ color: 0x12100d, roughness: 0.82 }),
       food: new THREE.MeshStandardMaterial({ color: 0xd9a63f, roughness: 0.62 }),
@@ -4506,27 +4560,68 @@ class AntColony3D {
 
   createNest() {
     const nestY = this.getSurfaceY(this.nest.x, this.nest.z);
-    const mound = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), this.materials.nest);
-    mound.position.set(this.nest.x, nestY + 1.25, this.nest.z);
-    mound.scale.set(this.nest.radius * 1.15, 2.1, this.nest.radius * 0.82);
+    const holeRadius = this.nest.radius * 0.27;
+    const outerRadius = this.nest.radius * 1.22;
+    const moundGeometry = createNestMoundGeometry({
+      innerRadius: holeRadius,
+      outerRadius,
+      height: 2.28,
+      ellipseZ: 0.84,
+      segments: 104,
+      rings: 13,
+    });
+    const mound = new THREE.Mesh(moundGeometry, this.materials.nest);
+    mound.position.set(this.nest.x, nestY + 0.02, this.nest.z);
     mound.castShadow = this.quality.shadowQuality !== "off";
     mound.receiveShadow = this.quality.shadowQuality !== "off";
     this.scene.add(mound);
     this.sharedGeometries.add(mound.geometry);
 
-    for (let i = 0; i < 5; i += 1) {
-      const angle = i * 1.25 + 0.4;
-      const hole = new THREE.Mesh(new THREE.CircleGeometry(1, 22), this.materials.nestDark);
-      hole.rotation.x = -Math.PI / 2;
-      hole.position.set(
-        this.nest.x + Math.cos(angle) * this.nest.radius * rand(0.08, 0.45),
-        nestY + 2.72,
-        this.nest.z + Math.sin(angle) * this.nest.radius * rand(0.08, 0.35),
-      );
-      hole.scale.set(rand(1.0, 1.8), rand(0.55, 0.95), 1);
-      this.scene.add(hole);
-      this.sharedGeometries.add(hole.geometry);
+    const shaftDepth = 3.5;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(holeRadius * 1.05, holeRadius * 0.64, shaftDepth, 72, 2, true),
+      this.materials.nestInner,
+    );
+    shaft.position.set(this.nest.x, nestY + 0.72, this.nest.z);
+    shaft.scale.z = 0.84;
+    shaft.castShadow = false;
+    shaft.receiveShadow = true;
+    this.scene.add(shaft);
+    this.sharedGeometries.add(shaft.geometry);
+
+    const bottom = new THREE.Mesh(new THREE.CircleGeometry(holeRadius * 0.72, 72), this.materials.nestDark);
+    bottom.rotation.x = -Math.PI / 2;
+    bottom.position.set(this.nest.x, nestY - 1.0, this.nest.z);
+    bottom.scale.set(1, 0.84, 1);
+    this.scene.add(bottom);
+    this.sharedGeometries.add(bottom.geometry);
+
+    const innerShadow = new THREE.Mesh(new THREE.RingGeometry(holeRadius * 0.84, holeRadius * 1.12, 72), this.materials.nestDark);
+    innerShadow.rotation.x = -Math.PI / 2;
+    innerShadow.position.set(this.nest.x, nestY + 2.22, this.nest.z);
+    innerShadow.scale.set(1, 0.84, 1);
+    this.scene.add(innerShadow);
+    this.sharedGeometries.add(innerShadow.geometry);
+
+    const crumbCount = this.quality.effectsQuality < 0.9 ? 18 : 30;
+    const crumbs = new THREE.InstancedMesh(this.geometries.foodShard, this.materials.nestPebble, crumbCount);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < crumbCount; i += 1) {
+      const angle = (i / crumbCount) * Math.PI * 2 + rand(-0.18, 0.18);
+      const r = rand(holeRadius * 1.04, outerRadius * 0.82);
+      const rimT = clamp((r - holeRadius) / (outerRadius - holeRadius), 0, 1);
+      const y = nestY + 0.18 + Math.pow(1 - rimT, 1.35) * 1.34 + rand(-0.08, 0.12);
+      const s = rand(0.22, 0.58) * (1 - rimT * 0.28);
+      dummy.position.set(this.nest.x + Math.cos(angle) * r, y, this.nest.z + Math.sin(angle) * r * 0.84);
+      dummy.rotation.set(rand(-0.55, 0.55), rand(0, Math.PI * 2), rand(-0.45, 0.45));
+      dummy.scale.set(s * rand(0.75, 1.45), s * rand(0.42, 0.86), s * rand(0.75, 1.35));
+      dummy.updateMatrix();
+      crumbs.setMatrixAt(i, dummy.matrix);
     }
+    crumbs.instanceMatrix.needsUpdate = true;
+    crumbs.castShadow = this.quality.shadowQuality !== "off";
+    crumbs.receiveShadow = this.quality.shadowQuality !== "off";
+    this.scene.add(crumbs);
   }
 
   bindEvents() {
