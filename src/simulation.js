@@ -117,6 +117,7 @@ const STATE_LABELS = {
   harvest: "採取",
   return: "帰巣",
   searchNest: "巣探し",
+  insideNest: "巣内",
   panic: "避難",
   wet: "乾燥",
   stunned: "停止",
@@ -180,6 +181,18 @@ const HOMING_PARAMS = {
   nestArriveRadiusMultiplier: 0.75,
   searchFallbackDelay: 8,
   searchGiveUpDelay: 18,
+};
+
+const NEST_TRAFFIC_PARAMS = {
+  dwellSeconds: 10,
+  holeRadiusScale: 0.21,
+  entryRadiusScale: 0.34,
+  queueRadiusScale: 0.78,
+  exitRadiusScale: 0.39,
+  entryRate: 2.15,
+  exitRate: 1.45,
+  maxEntryTokens: 1,
+  maxExitTokens: 1,
 };
 
 const ANT_FORMATION_PARAMS = {
@@ -1587,9 +1600,11 @@ class DebugPanel {
     this.frameMs = (this.elapsed / this.frames) * 1000;
     let returnCount = 0;
     let searchNestCount = 0;
+    let insideNestCount = 0;
     let pathErrorSum = 0;
     for (const ant of this.sim.ants) {
-      if (ant.state === "return") returnCount += 1;
+      if (ant.insideNest) insideNestCount += 1;
+      else if (ant.state === "return") returnCount += 1;
       else if (ant.state === "searchNest") searchNestCount += 1;
       pathErrorSum += ant.pathError ?? 0;
     }
@@ -1609,6 +1624,8 @@ class DebugPanel {
       `objects ${this.sim.water.length + this.sim.stones.length + this.sim.food.length + this.sim.branches.length}`,
       `return ${returnCount}`,
       `searchNest ${searchNestCount}`,
+      `insideNest ${insideNestCount}`,
+      `nestGate in ${this.sim.nestTraffic.entryTokens.toFixed(2)} out ${this.sim.nestTraffic.exitTokens.toFixed(2)}`,
       `pathError ${averagePathError.toFixed(1)}`,
       `pheromone ${this.sim.pheromones?.mode ?? "off"} ${this.sim.pheromones?.resolution ?? 0}`,
       `terrain ${terrain?.id ?? "-"} move ${terrainMove.toFixed(2)} decay ${(terrainPheromone?.decay ?? 1).toFixed(2)} diff ${(terrainPheromone?.diffusion ?? 1).toFixed(2)}`,
@@ -3164,6 +3181,8 @@ class Ant3D {
 
     this.fieldGradient = { x: 0, z: 0 };
     this.propSurface = { hit: false, y: 0, slow: 1 };
+    this.insideNest = false;
+    this.nestTimer = 0;
     this.renderStateScratch = {
       x: this.x,
       z: this.z,
@@ -3220,6 +3239,10 @@ class Ant3D {
     this.prevAngle = this.angle;
     this.stateTime += dt;
     this.homeTimer += dt;
+    if (this.insideNest) {
+      this.updateInsideNest(dt, sim);
+      return;
+    }
     this.wet = Math.max(0, this.wet - dt * 0.11);
     this.energy = clamp(this.energy + dt * 0.012, 0, 1);
     this.lastTrail += dt;
@@ -3276,6 +3299,7 @@ class Ant3D {
     else if (this.state === "rescue") this.updateRescue(dt, sim, steering);
     else this.updateExplore(dt, sim, steering, sensed);
 
+    if (this.insideNest) return;
     this.move(dt, sim, steering);
     this.leaveTrail(sim);
   }
@@ -3346,6 +3370,76 @@ class Ant3D {
     return estimate;
   }
 
+  updateInsideNest(dt, sim) {
+    this.nestTimer = Math.max(0, this.nestTimer - dt);
+    this.wet = Math.max(0, this.wet - dt * 0.22);
+    this.energy = 1;
+    this.stun = 0;
+    this.carrying = 0;
+    this.carryingLoad = 0;
+    this.carryingFoodValue = 0;
+    this.x = sim.nest.x;
+    this.z = sim.nest.z;
+    this.prevX = this.x;
+    this.prevZ = this.z;
+    this.prevAngle = this.angle;
+    if (this.nestTimer <= 0 && sim.requestNestExit(this)) {
+      this.exitNest(sim);
+    }
+  }
+
+  addNestQueueSteering(sim, steering, realNestDistance) {
+    const d = realNestDistance || 1;
+    const toNestX = (sim.nest.x - this.x) / d;
+    const toNestZ = (sim.nest.z - this.z) / d;
+    const tangentSign = this.id % 2 === 0 ? 1 : -1;
+    const tangentX = -toNestZ * tangentSign;
+    const tangentZ = toNestX * tangentSign;
+    const queueRadius = sim.nest.radius * NEST_TRAFFIC_PARAMS.queueRadiusScale;
+    const hold = clamp((queueRadius - realNestDistance) / queueRadius, 0, 1);
+    steering.x += tangentX * (0.58 + hold * 0.44);
+    steering.z += tangentZ * (0.58 + hold * 0.44);
+    steering.x -= toNestX * hold * 0.42;
+    steering.z -= toNestZ * hold * 0.42;
+  }
+
+  tryEnterNest(sim, steering, realNestDistance) {
+    const entryRadius = sim.nest.radius * NEST_TRAFFIC_PARAMS.entryRadiusScale;
+    if (realNestDistance > entryRadius) return false;
+    if (sim.requestNestEntry(this)) {
+      this.completeNestArrival(sim);
+      return true;
+    }
+    this.addNestQueueSteering(sim, steering, realNestDistance);
+    return true;
+  }
+
+  enterNest(sim) {
+    this.insideNest = true;
+    this.nestTimer = NEST_TRAFFIC_PARAMS.dwellSeconds;
+    this.x = sim.nest.x;
+    this.z = sim.nest.z;
+    this.prevX = this.x;
+    this.prevZ = this.z;
+    this.state = "insideNest";
+    this.stateTime = 0;
+  }
+
+  exitNest(sim) {
+    this.insideNest = false;
+    this.nestTimer = 0;
+    const angle = sim.nextNestExitAngle();
+    const radius = sim.nest.radius * NEST_TRAFFIC_PARAMS.exitRadiusScale + rand(-0.32, 0.52);
+    this.x = sim.nest.x + Math.sin(angle) * radius;
+    this.z = sim.nest.z + Math.cos(angle) * radius;
+    this.prevX = this.x;
+    this.prevZ = this.z;
+    this.angle = angle;
+    this.prevAngle = angle;
+    this.resetPathIntegration(sim);
+    this.setState("explore");
+  }
+
   completeNestArrival(sim) {
     this.deliverFoodToNest(sim);
     this.carrying = 0;
@@ -3359,7 +3453,7 @@ class Ant3D {
     this.energy = 1;
     this.homeTimer = 0;
     this.resetPathIntegration(sim);
-    this.setState("explore");
+    this.enterNest(sim);
   }
 
   deliverFoodToNest(sim) {
@@ -3727,8 +3821,7 @@ class Ant3D {
 
   updateReturn(dt, sim, steering) {
     const realNestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
-    if (realNestDistance < sim.nest.radius * HOMING_PARAMS.nestArriveRadiusMultiplier) {
-      this.completeNestArrival(sim);
+    if (this.tryEnterNest(sim, steering, realNestDistance)) {
       return;
     }
 
@@ -3759,8 +3852,7 @@ class Ant3D {
   updateSearchNest(dt, sim, steering) {
     this.searchNestTime += dt;
     const realNestDistance = distance2(this.x, this.z, sim.nest.x, sim.nest.z) || 1;
-    if (realNestDistance < sim.nest.radius * HOMING_PARAMS.nestArriveRadiusMultiplier) {
-      this.completeNestArrival(sim);
+    if (this.tryEnterNest(sim, steering, realNestDistance)) {
       return;
     }
 
@@ -3868,7 +3960,7 @@ class Ant3D {
         const cell = sim.antSpatialCells[row + gx];
         for (let i = 0; i < cell.length; i += 1) {
           const other = cell[i];
-          if (other === this) continue;
+          if (other === this || other.insideNest) continue;
           const d = distance2(this.x, this.z, other.x, other.z);
           if (d <= 0 || d > ANT_FORMATION_PARAMS.sameDirectionRadius) continue;
 
@@ -4078,6 +4170,7 @@ class Ant3D {
   }
 
   shock(strength) {
+    if (this.insideNest) return;
     if (strength > 0.82 && chance(0.24 + this.traits.caution * 0.18)) {
       this.stun = rand(0.8, 2.8) * strength;
       this.setState("stunned");
@@ -4262,7 +4355,9 @@ class AntRenderSystem {
 
   render(ants, sim, alpha) {
     this.beginFrame();
-    for (const ant of ants) this.renderAnt(ant, ant.renderState(sim, alpha));
+    for (const ant of ants) {
+      if (!ant.insideNest) this.renderAnt(ant, ant.renderState(sim, alpha));
+    }
     this.endFrame();
   }
 
@@ -4318,6 +4413,11 @@ class AntColony3D {
     this.worldRadius = 170;
     this.fieldMargin = 0;
     this.nest = { x: -42, z: 12, radius: 12 };
+    this.nestTraffic = {
+      entryTokens: NEST_TRAFFIC_PARAMS.maxEntryTokens,
+      exitTokens: NEST_TRAFFIC_PARAMS.maxExitTokens,
+      exitAngle: 0,
+    };
     this.antSpatialCellSize = ANT_FORMATION_PARAMS.sameDirectionRadius;
     this.antSpatialInvCellSize = 1 / this.antSpatialCellSize;
     this.antSpatialGridSize = Math.ceil((this.worldRadius * 2) / this.antSpatialCellSize) + 1;
@@ -4560,7 +4660,7 @@ class AntColony3D {
 
   createNest() {
     const nestY = this.getSurfaceY(this.nest.x, this.nest.z);
-    const holeRadius = this.nest.radius * 0.27;
+    const holeRadius = this.nest.radius * NEST_TRAFFIC_PARAMS.holeRadiusScale;
     const outerRadius = this.nest.radius * 1.22;
     const moundGeometry = createNestMoundGeometry({
       innerRadius: holeRadius,
@@ -4747,12 +4847,47 @@ class AntColony3D {
     this.collectedByType = createFoodTypeTotals();
     this.colonyStores = { energy: 0, storage: 0, brood: 0, material: 0 };
     this.nextFoodId = 1;
+    this.resetNestTraffic();
     this.foodSpawner?.reset();
     this.selectedAnt = null;
     const count = Number(ui.antCount.value);
     for (let i = 0; i < count; i += 1) this.ants.push(new Ant3D(i + 1, this));
     this.updateStats();
     this.updateInspector();
+  }
+
+  resetNestTraffic() {
+    this.nestTraffic.entryTokens = NEST_TRAFFIC_PARAMS.maxEntryTokens;
+    this.nestTraffic.exitTokens = NEST_TRAFFIC_PARAMS.maxExitTokens;
+    this.nestTraffic.exitAngle = rand(0, Math.PI * 2);
+  }
+
+  updateNestTraffic(dt) {
+    this.nestTraffic.entryTokens = Math.min(
+      NEST_TRAFFIC_PARAMS.maxEntryTokens,
+      this.nestTraffic.entryTokens + dt * NEST_TRAFFIC_PARAMS.entryRate,
+    );
+    this.nestTraffic.exitTokens = Math.min(
+      NEST_TRAFFIC_PARAMS.maxExitTokens,
+      this.nestTraffic.exitTokens + dt * NEST_TRAFFIC_PARAMS.exitRate,
+    );
+  }
+
+  requestNestEntry() {
+    if (this.nestTraffic.entryTokens < 1) return false;
+    this.nestTraffic.entryTokens -= 1;
+    return true;
+  }
+
+  requestNestExit() {
+    if (this.nestTraffic.exitTokens < 1) return false;
+    this.nestTraffic.exitTokens -= 1;
+    return true;
+  }
+
+  nextNestExitAngle() {
+    this.nestTraffic.exitAngle = (this.nestTraffic.exitAngle + 2.399963229728653) % (Math.PI * 2);
+    return this.nestTraffic.exitAngle + rand(-0.22, 0.22);
   }
 
   disposeDynamicItem(item) {
@@ -4856,6 +4991,7 @@ class AntColony3D {
   updateGame(dt) {
     this.terrain?.update(dt);
     this.foodSpawner?.update(dt);
+    this.updateNestTraffic(dt);
     this.updateFoodSources(dt);
 
     for (const food of this.food) {
@@ -4942,6 +5078,7 @@ class AntColony3D {
     this.antSpatialOccupiedCells.length = 0;
     const gridMax = this.antSpatialGridSize - 1;
     for (const ant of this.ants) {
+      if (ant.insideNest) continue;
       const gx = clamp(Math.floor((ant.x + this.worldRadius) * this.antSpatialInvCellSize), 0, gridMax);
       const gz = clamp(Math.floor((ant.z + this.worldRadius) * this.antSpatialInvCellSize), 0, gridMax);
       ant.spatialGridX = gx;
@@ -5647,7 +5784,7 @@ class AntColony3D {
     let best = null;
     let bestDistance = Infinity;
     for (const ant of this.ants) {
-      if (ant === helper || ant.stun <= 0) continue;
+      if (ant === helper || ant.insideNest || ant.stun <= 0) continue;
       const d = distance2(helper.x, helper.z, ant.x, ant.z);
       if (d < bestDistance && d < 22) {
         best = ant;
@@ -5661,6 +5798,7 @@ class AntColony3D {
     let best = null;
     let bestDistance = 5;
     for (const ant of this.ants) {
+      if (ant.insideNest) continue;
       const d = distance2(x, z, ant.x, ant.z);
       if (d < bestDistance) {
         best = ant;
@@ -5675,12 +5813,14 @@ class AntColony3D {
     let explore = 0;
     let alert = 0;
     let rescue = 0;
+    let insideNest = 0;
     for (const ant of this.ants) {
-      if (ant.state === "panic" || ant.state === "wet" || ant.state === "stunned") alert += 1;
+      if (ant.insideNest) insideNest += 1;
+      else if (ant.state === "panic" || ant.state === "wet" || ant.state === "stunned") alert += 1;
       else if (ant.state === "rescue") rescue += 1;
       else explore += 1;
     }
-    ui.statExplore.textContent = explore;
+    ui.statExplore.textContent = insideNest > 0 ? `${explore}+${insideNest}` : explore;
     ui.statAlert.textContent = alert;
     ui.statRescue.textContent = rescue;
     ui.statFood.textContent = Math.floor(this.collectedFood);
@@ -5690,7 +5830,9 @@ class AntColony3D {
     const ant = this.selectedAnt;
     if (!ant) {
       let naturalFoodCount = 0;
+      let insideNestCount = 0;
       for (const item of this.food) if (item.natural) naturalFoodCount += 1;
+      for (const colonyAnt of this.ants) if (colonyAnt.insideNest) insideNestCount += 1;
       ui.inspector.innerHTML = `
         <strong>コロニー貯蔵</strong>
         <div class="trait-grid">
@@ -5700,6 +5842,7 @@ class AntColony3D {
           <span>搬入 ${Math.floor(this.collectedFood)}</span>
           <span>自然餌 ${naturalFoodCount}</span>
           <span>餌総数 ${this.food.length}</span>
+          <span>巣内 ${insideNestCount}</span>
         </div>
       `;
       return;
@@ -5709,9 +5852,11 @@ class AntColony3D {
     const targetConfig = targetFood ? getFoodType(targetFood.type) : null;
     const activity = carryingConfig
       ? `運搬: ${carryingConfig.label}`
-      : targetConfig
-        ? `採取: ${targetConfig.label}`
-        : "運搬: なし";
+      : ant.insideNest
+        ? `巣内待機: ${Math.ceil(ant.nestTimer)}秒`
+        : targetConfig
+          ? `採取: ${targetConfig.label}`
+          : "運搬: なし";
     const targetDetail = targetFood
       ? `品質 ${Math.round((targetFood.quality ?? 1) * 100)}% / 協力 ${targetFood.lastHarvesterCount ?? 0}/${targetConfig.requiredHelpers}`
       : carryingConfig
