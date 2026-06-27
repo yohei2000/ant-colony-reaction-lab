@@ -196,10 +196,10 @@ const NEST_TRAFFIC_PARAMS = {
   entryRadiusScale: 0.26,
   queueRadiusScale: 0.68,
   exitRadiusScale: 0.31,
-  entryRate: 2.15,
-  exitRate: 1.45,
-  maxEntryTokens: 1,
-  maxExitTokens: 1,
+  entryRate: 6.45,
+  exitRate: 4.35,
+  maxEntryTokens: 3,
+  maxExitTokens: 3,
 };
 
 const ANT_FORMATION_PARAMS = {
