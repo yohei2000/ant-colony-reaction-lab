@@ -2052,6 +2052,39 @@ class TerrainSystem {
     }
   }
 
+  getPropGroundProbeRadius(options, scale, fallbackRadius = 0) {
+    const collider = options.collider;
+    if (!collider || collider.kind !== "branch") return fallbackRadius;
+    const stretchY = options.stretchY ?? 1;
+    const stretchX = options.stretchX ?? 1;
+    const stretchZ = options.stretchZ ?? 1;
+    const halfLength = (collider.length ?? 0) * scale * stretchY * 0.5;
+    const radius = (collider.radius ?? 0) * scale * Math.max(stretchX, stretchZ);
+    return Math.max(fallbackRadius, halfLength + radius + 2);
+  }
+
+  transformedGeometryMinY(geometry, matrix) {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    const e = matrix.elements;
+    return (
+      e[13] +
+      Math.min(e[1] * box.min.x, e[1] * box.max.x) +
+      Math.min(e[5] * box.min.y, e[5] * box.max.y) +
+      Math.min(e[9] * box.min.z, e[9] * box.max.z)
+    );
+  }
+
+  liftDummyAboveGround(geometry, groundY, clearance = 0.08) {
+    const minY = this.transformedGeometryMinY(geometry, this.dummy.matrix);
+    const targetMinY = groundY + clearance;
+    if (minY >= targetMinY) return 0;
+    const lift = targetMinY - minY;
+    this.dummy.position.y += lift;
+    this.dummy.updateMatrix();
+    return lift;
+  }
+
   samplePropContact(x, z, angle = 0, target = this.propSurfaceScratch) {
     target.hit = false;
     target.y = this.sampleHeight(x, z);
@@ -2468,7 +2501,8 @@ class TerrainSystem {
       const s = minScale + this.random() * (maxScale - minScale);
       const footprintScale = Math.max(options.stretchX ?? 1, options.stretchY ?? 1, options.stretchZ ?? 1);
       const clearanceRadius = (options.clearanceRadius ?? 0) * s * footprintScale;
-      const h = clearanceRadius > 0 ? this.sampleMaxHeightAround(x, z, clearanceRadius) : this.sampleHeight(x, z);
+      const groundProbeRadius = this.getPropGroundProbeRadius(options, s, clearanceRadius);
+      const h = groundProbeRadius > 0 ? this.sampleMaxHeightAround(x, z, groundProbeRadius) : this.sampleHeight(x, z);
       this.dummy.position.set(x, h + yOffset, z);
       if (options.flat) {
         const tilt = options.tilt ?? 0.16;
@@ -2490,12 +2524,15 @@ class TerrainSystem {
       }
       this.dummy.scale.set(s * (options.stretchX ?? 1), s * (options.stretchY ?? 1), s * (options.stretchZ ?? 1));
       this.dummy.updateMatrix();
+      if (options.layCylinder) {
+        this.liftDummyAboveGround(geometry, h, options.groundClearance ?? 0.08);
+      }
       mesh.setMatrixAt(placed, this.dummy.matrix);
       if (options.colorJitter && material.color) {
         this.propColor.copy(material.color).offsetHSL((this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter);
         mesh.setColorAt(placed, this.propColor);
       }
-      this.registerInstancedPropCollider(name, x, z, yaw, s, h, yOffset, options);
+      this.registerInstancedPropCollider(name, x, z, yaw, s, this.dummy.position.y - yOffset, yOffset, options);
       placed += 1;
       return true;
     };
@@ -2629,10 +2666,12 @@ class TerrainSystem {
       const x = nest.x + spec.x;
       const z = nest.z + spec.z;
       this.propDirection.set(Math.sin(spec.yaw), spec.slope, Math.cos(spec.yaw)).normalize();
-      this.dummy.position.set(x, this.sampleMaxHeightAround(x, z, spec.length * 0.42) + spec.radius * 2.1 + 0.65, z);
+      const groundY = this.sampleMaxHeightAround(x, z, spec.length * 0.52 + spec.radius * 2);
+      this.dummy.position.set(x, groundY + spec.radius * 2.1 + 0.65, z);
       this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
       this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
+      this.liftDummyAboveGround(branchGeometry, groundY, 0.08);
       branchMesh.setMatrixAt(i, this.dummy.matrix);
       this.registerPropCollider({
         kind: "branch",
@@ -5923,7 +5962,8 @@ class AntColony3D {
       const wobble = side.clone().multiplyScalar(endpointFade * Math.sin(t * Math.PI * 2 + bendPhase) * width * rand(0.12, 0.34));
       const lift = Math.sin(t * Math.PI) * width * rand(0.02, 0.12);
       const point = start.clone().lerp(end, t).add(wobble);
-      point.y = this.getSurfaceY(point.x, point.z, width * 0.92 + lift);
+      const groundY = this.terrain?.sampleMaxHeightAround(point.x, point.z, width * 1.35) ?? this.getSurfaceY(point.x, point.z);
+      point.y = groundY + width * 1.14 + lift;
       points.push(point);
     }
 
