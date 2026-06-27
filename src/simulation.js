@@ -1681,8 +1681,11 @@ class TerrainSystem {
     this.pheromoneScratch = { decay: 1, diffusion: 1 };
     this.propColor = new THREE.Color();
     this.propDirection = new THREE.Vector3();
+    this.propSide = new THREE.Vector3();
+    this.propVertical = new THREE.Vector3();
     this.propMid = new THREE.Vector3();
     this.propUp = new THREE.Vector3(0, 1, 0);
+    this.propBasis = new THREE.Matrix4();
     this.rootSegments = [];
     this.puddlePatches = [];
     this.propColliders = [];
@@ -2063,26 +2066,22 @@ class TerrainSystem {
     return Math.max(fallbackRadius, halfLength + radius + 2);
   }
 
-  transformedGeometryMinY(geometry, matrix) {
-    if (!geometry.boundingBox) geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
-    const e = matrix.elements;
-    return (
-      e[13] +
-      Math.min(e[1] * box.min.x, e[1] * box.max.x) +
-      Math.min(e[5] * box.min.y, e[5] * box.max.y) +
-      Math.min(e[9] * box.min.z, e[9] * box.max.z)
-    );
+  orientDummyAlongGroundBranch(direction) {
+    this.propDirection.copy(direction).normalize();
+    this.propVertical.copy(this.propUp).addScaledVector(this.propDirection, -this.propDirection.dot(this.propUp));
+    if (this.propVertical.lengthSq() < 0.0001) {
+      this.propVertical.copy(this.propUp);
+    } else {
+      this.propVertical.normalize();
+    }
+    this.propSide.crossVectors(this.propDirection, this.propVertical).normalize();
+    this.propBasis.makeBasis(this.propSide, this.propDirection, this.propVertical);
+    this.dummy.quaternion.setFromRotationMatrix(this.propBasis);
   }
 
-  liftDummyAboveGround(geometry, groundY, clearance = 0.08) {
-    const minY = this.transformedGeometryMinY(geometry, this.dummy.matrix);
-    const targetMinY = groundY + clearance;
-    if (minY >= targetMinY) return 0;
-    const lift = targetMinY - minY;
-    this.dummy.position.y += lift;
-    this.dummy.updateMatrix();
-    return lift;
+  getGroundedBranchOffset(geometry, scaleZ = 1, clearance = 0.045) {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    return Math.max(0, -geometry.boundingBox.min.z * scaleZ) + clearance;
   }
 
   samplePropContact(x, z, angle = 0, target = this.propSurfaceScratch) {
@@ -2474,7 +2473,7 @@ class TerrainSystem {
       side: THREE.DoubleSide,
       alphaTest: 0.24,
     }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, collider: { kind: "leaf", length: 5.4, width: 2.35, surfaceOffset: 0.22, crown: 0.28 }, castShadow: true });
-    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.78, surfaceRadiusScale: 0.88, climbable: true }, colorJitter: 0.03, castShadow: true });
+    this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.012, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.015, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.78, surfaceRadiusScale: 0.88, climbable: true }, colorJitter: 0.03, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(9 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0xa7aba2, roughness: 0.86 }), { yOffset: 0.12, minScale: 3.0, maxScale: 8.2, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
     this.addInstancedProps("mudClump", "mud", Math.round(17 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0x8b7352, roughness: 0.98 }), { yOffset: 0.075, minScale: 1.3, maxScale: 4.0, tumble: true, stretchY: 0.36 });
@@ -2501,16 +2500,17 @@ class TerrainSystem {
       const s = minScale + this.random() * (maxScale - minScale);
       const footprintScale = Math.max(options.stretchX ?? 1, options.stretchY ?? 1, options.stretchZ ?? 1);
       const clearanceRadius = (options.clearanceRadius ?? 0) * s * footprintScale;
-      const groundProbeRadius = this.getPropGroundProbeRadius(options, s, clearanceRadius);
+      const groundProbeRadius = options.layCylinder ? 0 : this.getPropGroundProbeRadius(options, s, clearanceRadius);
       const h = groundProbeRadius > 0 ? this.sampleMaxHeightAround(x, z, groundProbeRadius) : this.sampleHeight(x, z);
-      this.dummy.position.set(x, h + yOffset, z);
+      const supportOffset = options.layCylinder ? this.getGroundedBranchOffset(geometry, s * (options.stretchZ ?? 1), options.groundClearance ?? 0.045) : yOffset;
+      this.dummy.position.set(x, h + supportOffset, z);
       if (options.flat) {
         const tilt = options.tilt ?? 0.16;
         this.dummy.rotation.set(-Math.PI / 2 + (this.random() - 0.5) * tilt, (this.random() - 0.5) * tilt, yaw);
       } else if (options.layCylinder) {
         const liftVariance = options.liftVariance ?? 0.08;
         this.propDirection.set(Math.sin(yaw), (this.random() - 0.5) * liftVariance, Math.cos(yaw)).normalize();
-        this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
+        this.orientDummyAlongGroundBranch(this.propDirection);
       } else if (options.tumble) {
         this.dummy.rotation.set(this.random() * Math.PI, this.random() * Math.PI * 2, this.random() * Math.PI);
       } else if (options.lowShard) {
@@ -2524,9 +2524,6 @@ class TerrainSystem {
       }
       this.dummy.scale.set(s * (options.stretchX ?? 1), s * (options.stretchY ?? 1), s * (options.stretchZ ?? 1));
       this.dummy.updateMatrix();
-      if (options.layCylinder) {
-        this.liftDummyAboveGround(geometry, h, options.groundClearance ?? 0.08);
-      }
       mesh.setMatrixAt(placed, this.dummy.matrix);
       if (options.colorJitter && material.color) {
         this.propColor.copy(material.color).offsetHSL((this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter, (this.random() - 0.5) * options.colorJitter);
@@ -2604,7 +2601,7 @@ class TerrainSystem {
   addFeaturedClutter(leafMaterial, branchMaterial) {
     const nest = this.sim.nest;
     const leafGeometry = createCurledLeafGeometry(14.2, 6.2, 18, 7);
-    const branchGeometry = createBroadleafBranchGeometry(58, 0.82, 0.34, { radialSegments: 12, lengthSegments: 22, bendX: 0.18, bendZ: 0.06, forked: true });
+    const branchGeometry = createBroadleafBranchGeometry(58, 0.82, 0.34, { radialSegments: 12, lengthSegments: 22, bendX: 0.18, bendZ: 0.012, forked: true });
     const shadowGeometry = new THREE.CircleGeometry(1, 32);
     const shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x1b1108, transparent: true, opacity: 0.18, depthWrite: false });
     this.ownedGeometries.push(leafGeometry, branchGeometry, shadowGeometry);
@@ -2666,12 +2663,11 @@ class TerrainSystem {
       const x = nest.x + spec.x;
       const z = nest.z + spec.z;
       this.propDirection.set(Math.sin(spec.yaw), spec.slope, Math.cos(spec.yaw)).normalize();
-      const groundY = this.sampleMaxHeightAround(x, z, spec.length * 0.52 + spec.radius * 2);
-      this.dummy.position.set(x, groundY + spec.radius * 2.1 + 0.65, z);
-      this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
+      const groundY = this.sampleHeight(x, z);
+      this.dummy.position.set(x, groundY + this.getGroundedBranchOffset(branchGeometry, 1, 0.055), z);
+      this.orientDummyAlongGroundBranch(this.propDirection);
       this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
-      this.liftDummyAboveGround(branchGeometry, groundY, 0.08);
       branchMesh.setMatrixAt(i, this.dummy.matrix);
       this.registerPropCollider({
         kind: "branch",
@@ -5962,8 +5958,8 @@ class AntColony3D {
       const wobble = side.clone().multiplyScalar(endpointFade * Math.sin(t * Math.PI * 2 + bendPhase) * width * rand(0.12, 0.34));
       const lift = Math.sin(t * Math.PI) * width * rand(0.02, 0.12);
       const point = start.clone().lerp(end, t).add(wobble);
-      const groundY = this.terrain?.sampleMaxHeightAround(point.x, point.z, width * 1.35) ?? this.getSurfaceY(point.x, point.z);
-      point.y = groundY + width * 1.14 + lift;
+      const groundY = this.terrain?.sampleHeight(point.x, point.z) ?? this.getSurfaceY(point.x, point.z);
+      point.y = groundY + width * 1.06 + lift;
       points.push(point);
     }
 
