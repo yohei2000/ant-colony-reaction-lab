@@ -2429,12 +2429,10 @@ class TerrainSystem {
       bumpScale: 0.24,
       roughness: 0.97,
     });
-    this.addInstancedProps("leafFlake", "leafLitter", Math.round(92 * density), createCurledLeafGeometry(1.45, 0.62, 8, 3), dryLeafMaterial, { yOffset: 0.18, minScale: 2.2, maxScale: 5.8, flat: true, tilt: 0.14, stretchX: 1.28, stretchZ: 1.0 });
     this.addInstancedProps("pebble", "gravel", Math.round(34 * density), new THREE.DodecahedronGeometry(0.18, 0), new THREE.MeshStandardMaterial({ color: 0xa3a49a, roughness: 0.94 }), { yOffset: 0.7, minScale: 5.8, maxScale: 17.2, tumble: true, stretchY: 0.58 });
     this.addInstancedProps("fieldStone", ["soil", "gravel", "sand", "path"], Math.round(18 * density), new THREE.DodecahedronGeometry(0.45, 0), new THREE.MeshStandardMaterial({ color: 0xa7a292, roughness: 0.92, flatShading: true }), { yOffset: 1.6, minScale: 4.0, maxScale: 10.0, tumble: true, stretchY: 0.48, colorJitter: 0.045, castShadow: true });
     this.addInstancedProps("largeStone", ["soil", "gravel", "sand", "path"], Math.round(5 * density), new THREE.DodecahedronGeometry(0.95, 0), new THREE.MeshStandardMaterial({ color: 0x9b9789, roughness: 0.94, flatShading: true }), { yOffset: 2.6, minScale: 3.2, maxScale: 8.4, tumble: true, stretchY: 0.42, stretchX: 1.18, stretchZ: 0.92, colorJitter: 0.04, castShadow: true });
     this.addFeaturedRocks();
-    this.addRootProps(Math.round(15 * density), Math.round(6 * density));
     this.addInstancedProps("fallenLeaf", ["leafLitter", "grass", "soil"], Math.round(19 * density), createCurledLeafGeometry(2.65, 1.18, 10, 4), paleLeafMaterial, { yOffset: 0.72, minScale: 4.6, maxScale: 11.0, flat: true, tilt: 0.18, stretchX: 1.16, stretchZ: 1.0, clearanceRadius: 1.45, collider: { kind: "leaf", length: 2.65, width: 1.18, surfaceOffset: 0.18, crown: 0.22 }, castShadow: true });
     this.addInstancedProps("largeFallenLeaf", ["leafLitter", "grass", "soil"], Math.round(6 * density), createCurledLeafGeometry(5.4, 2.35, 14, 5), new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -2443,7 +2441,6 @@ class TerrainSystem {
       side: THREE.DoubleSide,
       alphaTest: 0.24,
     }), { yOffset: 1.05, minScale: 7.2, maxScale: 14.0, flat: true, tilt: 0.2, stretchX: 1.05, stretchZ: 1.0, clearanceRadius: 2.2, collider: { kind: "leaf", length: 5.4, width: 2.35, surfaceOffset: 0.22, crown: 0.28 }, castShadow: true });
-    this.addInstancedProps("brokenTwig", ["leafLitter", "soil", "grass", "root"], Math.round(9 * density), createBroadleafBranchGeometry(2.35, 0.115, 0.055, { radialSegments: 9, lengthSegments: 12, bendX: 0.1, bendZ: 0.035, forked: true }), darkTwigMaterial, { yOffset: 1.55, minScale: 4.8, maxScale: 12.5, layCylinder: true, liftVariance: 0.1, stretchY: 1.62, stretchX: 0.96, stretchZ: 0.96, clearanceRadius: 1.35, collider: { kind: "branch", length: 2.35, radius: 0.115, avoidPadding: 0.45, surfaceRadiusScale: 0.9, climbable: true }, colorJitter: 0.035, castShadow: true });
     this.addInstancedProps("fallenBranch", ["leafLitter", "soil", "grass", "root"], Math.round(4 * density), createBroadleafBranchGeometry(6.8, 0.34, 0.16, { radialSegments: 12, lengthSegments: 18, bendX: 0.16, bendZ: 0.05, forked: true }), darkTwigMaterial.clone(), { yOffset: 2.55, minScale: 2.4, maxScale: 5.2, layCylinder: true, liftVariance: 0.06, stretchY: 2.15, stretchX: 1.0, stretchZ: 1.0, clearanceRadius: 3.1, collider: { kind: "branch", length: 6.8, radius: 0.34, avoidPadding: 0.78, surfaceRadiusScale: 0.88, climbable: true }, colorJitter: 0.03, castShadow: true });
     this.addFeaturedClutter(paleLeafMaterial, darkTwigMaterial);
     this.addInstancedProps("pavementChip", ["pavement", "path"], Math.round(9 * density), new THREE.BoxGeometry(0.74, 0.045, 0.42), new THREE.MeshStandardMaterial({ color: 0xa7aba2, roughness: 0.86 }), { yOffset: 0.12, minScale: 3.0, maxScale: 8.2, lowShard: true, stretchX: 1.2, stretchZ: 0.82 });
@@ -2688,51 +2685,6 @@ class TerrainSystem {
     this.visuals.push(shadowMesh);
   }
 
-  addRootProps(segmentCount, knotCount) {
-    const segmentGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1);
-    const segmentMaterial = new THREE.MeshStandardMaterial({ color: 0xa87442, roughness: 0.95 });
-    const segmentMesh = new THREE.InstancedMesh(segmentGeometry, segmentMaterial, segmentCount);
-    segmentMesh.name = "terrain-rootSegment";
-    segmentMesh.frustumCulled = true;
-    segmentMesh.castShadow = false;
-    segmentMesh.receiveShadow = false;
-    this.ownedGeometries.push(segmentGeometry);
-    this.ownedMaterials.push(segmentMaterial);
-
-    let placedSegments = 0;
-    for (let attempt = 0; attempt < segmentCount * 10 && placedSegments < segmentCount; attempt += 1) {
-      const root = this.rootSegments[Math.floor(this.random() * this.rootSegments.length)];
-      if (!root) break;
-      const t = this.random();
-      const length = 4.0 + this.random() * 10.0;
-      const dx = root.x2 - root.x1;
-      const dz = root.z2 - root.z1;
-      const rootLength = Math.hypot(dx, dz) || 1;
-      const dirX = dx / rootLength;
-      const dirZ = dz / rootLength;
-      const x = root.x1 + dx * t + (this.random() - 0.5) * root.width * 0.38;
-      const z = root.z1 + dz * t + (this.random() - 0.5) * root.width * 0.38;
-      if (Math.hypot(x, z) > this.sim.worldRadius - 2) continue;
-      if (this.sampleType(x, z).id !== "root") continue;
-      const radius = 0.12 + this.random() * 0.32;
-      this.propDirection.set(dirX, 0.05 + (this.random() - 0.5) * 0.04, dirZ).normalize();
-      this.dummy.position.set(x, this.sampleHeight(x, z) + radius * 0.82, z);
-      this.dummy.quaternion.setFromUnitVectors(this.propUp, this.propDirection);
-      this.dummy.scale.set(radius, length, radius * (0.78 + this.random() * 0.32));
-      this.dummy.updateMatrix();
-      segmentMesh.setMatrixAt(placedSegments, this.dummy.matrix);
-      placedSegments += 1;
-    }
-    segmentMesh.count = placedSegments;
-    segmentMesh.instanceMatrix.needsUpdate = true;
-    this.propInstanceCount += placedSegments;
-    this.sim.scene.add(segmentMesh);
-    this.visuals.push(segmentMesh);
-
-    const knotGeometry = new THREE.DodecahedronGeometry(0.34, 0);
-    const knotMaterial = new THREE.MeshStandardMaterial({ color: 0x9b6840, roughness: 0.98 });
-    this.addInstancedProps("rootKnot", "root", knotCount, knotGeometry, knotMaterial, { yOffset: 0.42, minScale: 1.0, maxScale: 3.2, tumble: true, stretchY: 0.72 });
-  }
 }
 
 const PHEROMONE_FIELD_MODES = ["off", "food", "alarm", "avoid", "rescue", "all"];
